@@ -118,6 +118,27 @@ app.delete('/api/skills/:id', (c) => {
   return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
 })
 
+app.post('/api/skills/upload', async (c) => {
+  const body = await c.req.parseBody()
+  const file = body['file']
+  if (!file || typeof file === 'string') return c.json({ error: 'file required' }, 400)
+
+  const { parseSkillArchive } = await import('./skill-upload.js')
+  try {
+    const parsed = await parseSkillArchive(file)
+    const skill = addSkill({
+      name: parsed.name,
+      description: parsed.description,
+      promptTemplate: parsed.promptTemplate,
+      requiredMcps: parsed.requiredMcps ?? [],
+      compatibleModels: ['*'],
+    })
+    return c.json(skill, 201)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'upload failed' }, 400)
+  }
+})
+
 // ═══════════════════════════════════
 //  MCPs
 // ═══════════════════════════════════

@@ -22,6 +22,16 @@ export const api = {
   listSkills: () => request<any[]>('/skills'),
   addSkill: (data: any) => request<any>('/skills', { method: 'POST', body: JSON.stringify(data) }),
   removeSkill: (id: string) => request<any>(`/skills/${id}`, { method: 'DELETE' }),
+  uploadSkill: async (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${BASE}/skills/upload`, { method: 'POST', body: form })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(err.error ?? res.statusText)
+    }
+    return res.json()
+  },
 
   listMcps: () => request<any[]>('/mcps'),
   addMcp: (data: any) => request<any>('/mcps', { method: 'POST', body: JSON.stringify(data) }),

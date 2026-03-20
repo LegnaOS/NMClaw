@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
 export default function Skills() {
   const [skills, setSkills] = useState<any[]>([])
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState({ name: '', description: '', promptTemplate: '', requiredMcps: '' })
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const load = () => api.listSkills().then(setSkills)
   useEffect(() => { load() }, [])
@@ -25,6 +29,32 @@ export default function Skills() {
     load()
   }
 
+  const handleUpload = async (file: File) => {
+    const ext = file.name.toLowerCase()
+    if (!ext.endsWith('.zip') && !ext.endsWith('.tar.gz') && !ext.endsWith('.tgz') && !ext.endsWith('.tar') && !ext.endsWith('.md')) {
+      setUploadError('不支持的格式，请上传 .zip / .tar.gz / .tgz / .md')
+      return
+    }
+    setUploading(true)
+    setUploadError('')
+    try {
+      await api.uploadSkill(file)
+      load()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '上传失败')
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) handleUpload(file)
+  }
+
   return (
     <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
@@ -36,6 +66,33 @@ export default function Skills() {
 
       {showForm && (
         <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155] space-y-3">
+          {/* File upload zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+            onClick={() => fileRef.current?.click()}
+            className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+              dragOver ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#475569] hover:border-[#64748b]'
+            }`}
+          >
+            <input ref={fileRef} type="file" accept=".zip,.tar.gz,.tgz,.tar,.md" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f) }} />
+            <p className="text-sm text-[#94a3b8]">
+              {uploading ? '上传解析中...' : '拖拽或点击上传技能包'}
+            </p>
+            <p className="text-[10px] text-[#64748b] mt-1">
+              支持 .zip / .tar.gz / .tgz / .md — 压缩包内需包含 SKILL.md
+            </p>
+          </div>
+          {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
+
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-[#334155]" />
+            <span className="text-[10px] text-[#64748b]">或手动填写</span>
+            <div className="flex-1 h-px bg-[#334155]" />
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-[#94a3b8] mb-1">技能名称</label>
