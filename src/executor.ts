@@ -3,7 +3,7 @@ import OpenAI from 'openai'
 import { getModel } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
 import { getAgent, touchAgent } from './agent-manager.js'
-import { getAllTools, callTool, findToolMcp } from './mcp-runtime.js'
+import { getAllTools, getToolsForAgent, callTool, findToolMcp } from './mcp-runtime.js'
 import type { ChatMessage, ChatResponse, ModelConfig } from './types.js'
 import type { ToolDef } from './mcp-runtime.js'
 
@@ -71,8 +71,8 @@ function toOpenAITools(tools: ToolDef[]): OpenAI.ChatCompletionTool[] {
 // ═══════════════════════════════════
 
 export async function executeTask(agentId: string, userPrompt: string, onSpan?: SpanEmitter): Promise<ChatResponse> {
-  const { model, systemPrompt } = buildSystemPrompt(agentId)
-  const tools = await getAllTools()
+  const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
+  const tools = await getToolsForAgent(agent.mcpIds)
   const messages: ChatMessage[] = [{ role: 'user', content: userPrompt }]
 
   if (model.provider === 'anthropic') {
@@ -200,8 +200,8 @@ async function callOpenAIWithTools(
 // ═══════════════════════════════════
 
 export async function* streamTask(agentId: string, messages: ChatMessage[]): AsyncGenerator<string> {
-  const { model, systemPrompt } = buildSystemPrompt(agentId)
-  const tools = await getAllTools()
+  const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
+  const tools = await getToolsForAgent(agent.mcpIds)
 
   if (model.provider === 'anthropic') {
     yield* streamAnthropicWithTools(model, systemPrompt, messages, tools)
@@ -213,111 +213,166 @@ export async function* streamTask(agentId: string, messages: ChatMessage[]): Asy
 async function* streamAnthropicWithTools(
   model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
 ): AsyncGenerator<string> {
-  const client = new Anthropic({
-    apiKey: getApiKey(model),
-    ...(model.config.baseUrl ? { baseURL: model.config.baseUrl } : {}),
-  })
   const params = model.config.defaultParams ?? {}
   const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
   let totalTokens = 0
+  const baseUrl = (model.config.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '')
+  const apiKey = getApiKey(model)
+
+  // ── Build tool descriptions into system prompt (proxy strips native tool_use) ──
+  const toolDesc = tools.map((t) => {
+    const schema = t.inputSchema as any
+    const props = schema?.properties
+      ? Object.entries(schema.properties).map(([k, v]: [string, any]) => `    ${k}: ${v.type}${v.description ? ' — ' + v.description : ''}`).join('\n')
+      : '    (无参数)'
+    const required = schema?.required?.length ? `  必填: ${schema.required.join(', ')}` : ''
+    return `- ${t.name}: ${t.description || ''}\n  参数:\n${props}${required ? '\n' + required : ''}`
+  }).join('\n')
+
+  const toolSystemPrompt = [
+    system,
+    '',
+    '═══ 工具调用协议 ═══',
+    '你拥有以下工具。当需要调用工具时，必须严格使用以下 XML 格式输出（可一次调用多个）：',
+    '',
+    '<tool_call>',
+    '{"name": "工具名", "input": {"参数名": "值"}}',
+    '</tool_call>',
+    '',
+    '规则：',
+    '- 每个工具调用必须是独立的 <tool_call>...</tool_call> 块',
+    '- input 必须是合法 JSON',
+    '- 调用工具前可以输出思考文本',
+    '- 输出工具调用后立即停止，等待结果',
+    '',
+    '可用工具：',
+    toolDesc,
+  ].join('\n')
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    let stream
+    let data: any
     try {
-      stream = await client.messages.create({
-        model: model.name,
-        max_tokens: (params.max_tokens as number) ?? 4096,
-        system,
-        messages: anthropicMsgs,
-        ...(tools.length > 0 ? { tools: toAnthropicTools(tools) } : {}),
-        ...(params.temperature != null ? { temperature: params.temperature as number } : {}),
-        stream: true,
+      const res = await fetch(`${baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: model.name,
+          max_tokens: (params.max_tokens as number) ?? 4096,
+          system: toolSystemPrompt,
+          messages: anthropicMsgs,
+          ...(params.temperature != null ? { temperature: params.temperature as number } : {}),
+        }),
       })
+      data = await res.json()
+      if (!res.ok) {
+        yield `\n\n[Error: ${data?.error?.message || res.statusText}]`
+        break
+      }
     } catch (err) {
       yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
       break
     }
 
-    let stopReason = ''
-    const contentBlocks: any[] = []
-    let currentBlock: any = null
+    const content: any[] = data.content || []
+    const text = content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+    const roundTokens = (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0)
+    totalTokens += roundTokens
+    console.log(`[stream-anthropic] round=${round} text-length=${text.length}`)
 
-    for await (const event of stream) {
-      if (event.type === 'message_start') {
-        const usage = (event as any).message?.usage
-        if (usage) totalTokens += usage.input_tokens ?? 0
-      } else if (event.type === 'content_block_start') {
-        currentBlock = { ...event.content_block }
-        if (currentBlock.type === 'tool_use') {
-          currentBlock._inputJson = ''
-        }
-      } else if (event.type === 'content_block_delta') {
-        if (event.delta.type === 'text_delta') {
-          yield event.delta.text
-          if (currentBlock) currentBlock.text = (currentBlock.text || '') + event.delta.text
-        } else if (event.delta.type === 'input_json_delta') {
-          if (currentBlock) currentBlock._inputJson += event.delta.partial_json
-        }
-      } else if (event.type === 'content_block_stop') {
-        if (currentBlock) {
-          if (currentBlock.type === 'tool_use' && currentBlock._inputJson) {
-            try { currentBlock.input = JSON.parse(currentBlock._inputJson) } catch { currentBlock.input = {} }
-          }
-          delete currentBlock._inputJson
-          contentBlocks.push(currentBlock)
-          currentBlock = null
-        }
-      } else if (event.type === 'message_delta') {
-        stopReason = (event.delta as any).stop_reason || ''
-        const usage = (event as any).usage
-        if (usage) totalTokens += usage.output_tokens ?? 0
-      }
+    // ── Parse <tool_call> blocks from text ──
+    const toolCallRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g
+    const toolCalls: { name: string; input: Record<string, unknown> }[] = []
+    let m
+    while ((m = toolCallRegex.exec(text)) !== null) {
+      try { toolCalls.push(JSON.parse(m[1])) } catch { /* skip malformed */ }
     }
 
-    if (stopReason !== 'tool_use' || contentBlocks.filter((b) => b.type === 'tool_use').length === 0) {
+    // ── Yield text without <tool_call> blocks ──
+    const cleanText = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
+    if (cleanText) yield cleanText
+
+    if (toolCalls.length === 0) {
+      console.log(`[stream-anthropic] no tool calls found, done`)
       break
     }
 
-    // Process tool calls
-    const toolUseBlocks = contentBlocks.filter((b) => b.type === 'tool_use')
-    const toolResults: any[] = []
+    console.log(`[stream-anthropic] found ${toolCalls.length} tool call(s): ${toolCalls.map(tc => tc.name).join(', ')}`)
 
-    for (const block of toolUseBlocks) {
-      yield `[TOOL_CALL:${block.name}]`
-      const mcpId = findToolMcp(tools, block.name)
+    // ── Execute tools ──
+    const resultParts: string[] = []
+    for (const tc of toolCalls) {
+      yield `[TOOL_CALL:${tc.name}]`
+
+      // Special handling: dispatch_to_agent streams worker output in real-time
+      if (tc.name === 'dispatch_to_agent') {
+        const targetId = (tc.input as any)?.agentId as string
+        const prompt = (tc.input as any)?.prompt as string
+        if (!targetId || !prompt) {
+          yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
+          resultParts.push(`[${tc.name}] Error: 缺少 agentId 或 prompt`)
+          continue
+        }
+        const targetAgent = getAgent(targetId)
+        const agentName = targetAgent?.name || targetId
+
+        yield `[DISPATCH_START:${targetId}|${agentName}]`
+        let workerOutput = ''
+        try {
+          for await (const chunk of streamTask(targetId, [{ role: 'user' as const, content: prompt }])) {
+            // Forward tool markers from worker so UI can show worker's tool usage
+            if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
+                chunk.startsWith('[FILE_OUTPUT:')) {
+              yield chunk
+              continue
+            }
+            // Skip meta markers
+            if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
+                chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
+            const clean = chunk.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+            if (clean) {
+              workerOutput += clean
+              yield clean
+            }
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          workerOutput = `执行失败: ${errMsg}`
+          yield workerOutput
+        }
+        yield `[DISPATCH_END:${agentName}]`
+
+        const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
+        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
+        resultParts.push(`[${agentName} 的回复]\n${workerOutput.trim() || '(无回复)'}`)
+        continue
+      }
+
+      const mcpId = findToolMcp(tools, tc.name)
       if (!mcpId) {
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Tool not found: ${block.name}`, is_error: true })
+        resultParts.push(`[${tc.name}] Error: 工具未找到`)
         continue
       }
       try {
-        const result = await callTool(mcpId, block.name, block.input || {})
-        if (block.name === 'write_file' && block.input?.path && !result.isError) {
-          yield `[FILE_OUTPUT:${block.input.path}]`
+        const result = await callTool(mcpId, tc.name, tc.input || {})
+        if (tc.name === 'write_file' && (tc.input as any)?.path && !result.isError) {
+          yield `[FILE_OUTPUT:${(tc.input as any).path}]`
         }
-        yield `[TOOL_RESULT:${block.name}|${toolResultPreview(result.content)}]`
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: result.content,
-          ...(result.isError ? { is_error: true } : {}),
-        })
+        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(result.content)}]`
+        resultParts.push(`[${tc.name}] ${result.isError ? 'Error: ' : ''}${result.content}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
-        yield `[TOOL_RESULT:${block.name}|Error: ${errMsg}]`
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Tool error: ${errMsg}`, is_error: true })
+        yield `[TOOL_RESULT:${tc.name}|Error: ${errMsg}]`
+        resultParts.push(`[${tc.name}] Error: ${errMsg}`)
       }
     }
 
-    // Build messages for next round
-    anthropicMsgs.push({
-      role: 'assistant',
-      content: contentBlocks.map((b) => {
-        if (b.type === 'text') return { type: 'text', text: b.text || '' }
-        if (b.type === 'tool_use') return { type: 'tool_use', id: b.id, name: b.name, input: b.input || {} }
-        return b
-      }),
-    })
-    anthropicMsgs.push({ role: 'user', content: toolResults })
+    // ── Feed results back as text messages ──
+    anthropicMsgs.push({ role: 'assistant', content: text })
+    anthropicMsgs.push({ role: 'user', content: `工具执行结果：\n\n${resultParts.join('\n\n')}` })
   }
   if (totalTokens > 0) yield `[STREAM_META:tokens=${totalTokens}]`
 }

@@ -41,6 +41,16 @@ export function removeGraph(id: string): boolean {
   return found
 }
 
+export function modifyGraph(id: string, patch: Partial<Pick<GraphConfig, 'name' | 'description' | 'nodes' | 'edges'>>): boolean {
+  let found = false
+  updateStore((s) => {
+    s.graphs = s.graphs ?? []
+    const g = s.graphs.find((x) => x.id === id)
+    if (g) { Object.assign(g, patch); found = true }
+  })
+  return found
+}
+
 // ─── Execution ───
 
 function findStartNodes(graph: GraphConfig): string[] {

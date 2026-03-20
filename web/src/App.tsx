@@ -10,8 +10,9 @@ import Chat from './pages/Chat'
 import Graphs from './pages/Graphs'
 import ClawHub from './pages/ClawHub'
 import Cron from './pages/Cron'
+import Channels from './pages/Channels'
 
-export type Page = 'chat' | 'dashboard' | 'models' | 'skills' | 'mcps' | 'agents' | 'tasks' | 'graphs' | 'clawhub' | 'cron'
+export type Page = 'chat' | 'dashboard' | 'models' | 'skills' | 'mcps' | 'agents' | 'tasks' | 'graphs' | 'clawhub' | 'cron' | 'channels'
 
 export default function App() {
   const [page, setPage] = useState<Page>('chat')
@@ -28,6 +29,7 @@ export default function App() {
       <div className={`h-full ${page === 'graphs' ? '' : 'hidden'}`}><Graphs /></div>
       <div className={`h-full ${page === 'clawhub' ? '' : 'hidden'}`}><ClawHub /></div>
       <div className={`h-full ${page === 'cron' ? '' : 'hidden'}`}><Cron /></div>
+      <div className={`h-full ${page === 'channels' ? '' : 'hidden'}`}><Channels /></div>
     </Layout>
   )
 }

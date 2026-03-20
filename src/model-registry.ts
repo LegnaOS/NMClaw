@@ -48,6 +48,24 @@ export function getModel(id: string): ModelConfig | undefined {
   return loadStore().models.find((m) => m.id === id)
 }
 
+export function modifyModel(id: string, patch: Partial<Pick<ModelConfig, 'name' | 'provider' | 'capabilities' | 'costTier'>> & { apiKeyEnv?: string; baseUrl?: string; defaultParams?: Record<string, unknown> }): boolean {
+  let found = false
+  updateStore((s) => {
+    const m = s.models.find((x) => x.id === id)
+    if (m) {
+      if (patch.name != null) m.name = patch.name
+      if (patch.provider != null) m.provider = patch.provider
+      if (patch.capabilities != null) m.capabilities = patch.capabilities
+      if (patch.costTier != null) m.costTier = patch.costTier
+      if (patch.apiKeyEnv !== undefined) m.config.apiKeyEnv = patch.apiKeyEnv
+      if (patch.baseUrl !== undefined) m.config.baseUrl = patch.baseUrl
+      if (patch.defaultParams !== undefined) m.config.defaultParams = patch.defaultParams
+      found = true
+    }
+  })
+  return found
+}
+
 export function findModelsByCapability(cap: string): ModelConfig[] {
   return loadStore().models.filter((m) => m.capabilities.includes(cap))
 }

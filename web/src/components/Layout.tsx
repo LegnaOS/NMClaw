@@ -12,6 +12,7 @@ const NAV_ITEMS: { key: Page; label: string; icon: string; separator?: boolean }
   { key: 'mcps', label: 'MCP库', icon: '⬢' },
   { key: 'tasks', label: '任务', icon: '▶', separator: true },
   { key: 'cron', label: '定时任务', icon: '⏰' },
+  { key: 'channels', label: '渠道', icon: '🔗' },
 ]
 
 export default function Layout({

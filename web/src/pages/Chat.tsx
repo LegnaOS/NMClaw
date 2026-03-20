@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { api } from '../api'
 
-type Message = { role: 'user' | 'assistant'; content: string; timestamp: number; tokens?: number; durationMs?: number }
+type Message = { role: 'user' | 'assistant'; content: string; timestamp: number; tokens?: number; durationMs?: number; agentName?: string }
 
 const CHAT_STORAGE_KEY = 'nmclaw_chat_messages'
 
@@ -26,20 +28,55 @@ function extractTokens(content: string): number | undefined {
   return m ? parseInt(m[1]) : undefined
 }
 
+function extractAgentName(content: string): string | undefined {
+  const m = content.match(/\[AGENT_INFO:[^|]*\|([^\]]+)\]/)
+  return m ? m[1] : undefined
+}
+
 // --- Content parsing ---
 
 type Segment =
   | { type: 'text'; content: string }
   | { type: 'tool'; name: string; result?: string; fileOutput?: string }
+  | { type: 'dispatch'; agentId: string; agentName: string; content: string; tools: { name: string; result?: string }[] }
 
 function parseSegments(content: string): Segment[] {
-  const re = /(\[TOOL_CALL:[^\]]+\]|\[TOOL_RESULT:[^\]]*\]|\[FILE_OUTPUT:[^\]]+\]|\[STREAM_META:[^\]]+\])/
+  const re = /(\[TOOL_CALL:[^\]]+\]|\[TOOL_RESULT:[^\]]*\]|\[FILE_OUTPUT:[^\]]+\]|\[STREAM_META:[^\]]+\]|\[AGENT_INFO:[^\]]+\]|\[DISPATCH_START:[^\]]+\]|\[DISPATCH_END:[^\]]*\])/
   const parts = content.split(re)
   const segments: Segment[] = []
   let curTool: { name: string; result?: string; fileOutput?: string } | null = null
+  let curDispatch: { agentId: string; agentName: string; content: string; tools: { name: string; result?: string }[] } | null = null
 
   for (const part of parts) {
     if (!part) continue
+
+    // Dispatch start
+    const dsMatch = part.match(/^\[DISPATCH_START:([^|]*)\|([^\]]*)\]$/)
+    if (dsMatch) {
+      if (curTool) { segments.push({ type: 'tool', ...curTool }); curTool = null }
+      curDispatch = { agentId: dsMatch[1], agentName: dsMatch[2], content: '', tools: [] }
+      continue
+    }
+    // Dispatch end
+    if (part.startsWith('[DISPATCH_END:')) {
+      if (curDispatch) { segments.push({ type: 'dispatch', ...curDispatch }); curDispatch = null }
+      continue
+    }
+
+    // Inside dispatch: collect tool calls and text
+    if (curDispatch) {
+      const tcMatch = part.match(/^\[TOOL_CALL:(.+)\]$/)
+      if (tcMatch) { curDispatch.tools.push({ name: tcMatch[1] }); continue }
+      const trMatch = part.match(/^\[TOOL_RESULT:([^|]*)\|?([^\]]*)\]$/)
+      if (trMatch && curDispatch.tools.length > 0) {
+        curDispatch.tools[curDispatch.tools.length - 1].result = trMatch[2] || ''
+        continue
+      }
+      if (part.startsWith('[STREAM_META:') || part.startsWith('[AGENT_INFO:') || part.startsWith('[FILE_OUTPUT:')) continue
+      curDispatch.content += part
+      continue
+    }
+
     const tcMatch = part.match(/^\[TOOL_CALL:(.+)\]$/)
     if (tcMatch) {
       if (curTool) segments.push({ type: 'tool', ...curTool })
@@ -55,10 +92,12 @@ function parseSegments(content: string): Segment[] {
       continue
     }
     if (part.startsWith('[STREAM_META:')) continue
+    if (part.startsWith('[AGENT_INFO:')) continue
     if (curTool) { segments.push({ type: 'tool', ...curTool }); curTool = null }
     segments.push({ type: 'text', content: part })
   }
   if (curTool) segments.push({ type: 'tool', ...curTool })
+  if (curDispatch) segments.push({ type: 'dispatch', ...curDispatch })
   return segments
 }
 
@@ -94,6 +133,43 @@ function ToolBlock({ name, result, fileOutput }: { name: string; result?: string
   )
 }
 
+// --- Dispatch block (worker agent sub-conversation) ---
+
+function DispatchBlock({ agentName, content, tools }: { agentName: string; content: string; tools: { name: string; result?: string }[] }) {
+  const [expanded, setExpanded] = useState(true)
+  const hasContent = !!(content.trim())
+  return (
+    <div className="my-2 border border-[#3b82f6]/30 rounded-lg overflow-hidden bg-[#0f172a]/50">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-3 py-2 flex items-center gap-2 text-xs hover:bg-[#1e293b] transition-colors"
+      >
+        <span className={`text-[10px] transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
+        <span className="text-[#3b82f6]">◈</span>
+        <span className="text-[#3b82f6] font-medium">{agentName}</span>
+        <span className="text-[#64748b]">正在执行</span>
+        {!expanded && hasContent && <span className="text-[#475569] ml-auto truncate max-w-[300px] text-[10px]">{content.trim().slice(0, 80)}</span>}
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 border-t border-[#334155]/30">
+          {tools.map((t, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px] text-[#64748b] py-0.5">
+              <span className="text-[#3b82f6]">⚙️</span>
+              <span className="font-mono">{t.name}</span>
+              {t.result && <span className="truncate max-w-[200px]">{t.result.slice(0, 50)}</span>}
+            </div>
+          ))}
+          {hasContent && (
+            <div className="mt-1 chat-md text-sm">
+              <Markdown remarkPlugins={[remarkGfm]}>{content.trim()}</Markdown>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MessageContent({ content }: { content: string }) {
   const segments = parseSegments(content)
   return (
@@ -101,7 +177,11 @@ function MessageContent({ content }: { content: string }) {
       {segments.map((seg, i) =>
         seg.type === 'tool'
           ? <ToolBlock key={i} name={seg.name} result={seg.result} fileOutput={seg.fileOutput} />
-          : <pre key={i} className="whitespace-pre-wrap break-words font-sans">{seg.content}</pre>
+          : seg.type === 'dispatch'
+            ? <DispatchBlock key={i} agentName={seg.agentName} content={seg.content} tools={seg.tools} />
+            : <div key={i} className="chat-md">
+                <Markdown remarkPlugins={[remarkGfm]}>{seg.content}</Markdown>
+              </div>
       )}
     </>
   )
@@ -115,6 +195,7 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
@@ -124,29 +205,41 @@ export default function Chat() {
   useEffect(() => { if (editingIdx !== null) editRef.current?.focus() }, [editingIdx])
 
   const sendWithHistory = async (history: Message[]) => {
+    const abort = new AbortController()
+    abortRef.current = abort
     setStreaming(true)
     const startTime = Date.now()
     const assistantMsg: Message = { role: 'assistant', content: '', timestamp: Date.now() }
     setMessages([...history, assistantMsg])
 
     try {
-      for await (const chunk of api.chat(history.map((m) => ({ role: m.role, content: m.content })))) {
+      for await (const chunk of api.chat(history.map((m) => ({ role: m.role, content: m.content })), abort.signal)) {
+        if (abort.signal.aborted) break
         assistantMsg.content += chunk
         const tokens = extractTokens(assistantMsg.content)
         if (tokens) assistantMsg.tokens = tokens
+        const agent = extractAgentName(assistantMsg.content)
+        if (agent) assistantMsg.agentName = agent
         assistantMsg.durationMs = Date.now() - startTime
         setMessages([...history, { ...assistantMsg }])
       }
       assistantMsg.durationMs = Date.now() - startTime
       setMessages([...history, { ...assistantMsg }])
     } catch (err) {
-      assistantMsg.content += `\n\n[Error: ${err instanceof Error ? err.message : err}]`
-      assistantMsg.durationMs = Date.now() - startTime
-      setMessages([...history, { ...assistantMsg }])
+      if (!abort.signal.aborted) {
+        assistantMsg.content += `\n\n[Error: ${err instanceof Error ? err.message : err}]`
+        assistantMsg.durationMs = Date.now() - startTime
+        setMessages([...history, { ...assistantMsg }])
+      }
     } finally {
+      abortRef.current = null
       setStreaming(false)
       inputRef.current?.focus()
     }
+  }
+
+  const stopStreaming = () => {
+    abortRef.current?.abort()
   }
 
   const send = async () => {
@@ -248,6 +341,9 @@ export default function Chat() {
                   <MessageContent content={msg.content} />
                 </div>
                 <div className={`flex items-center gap-2 mt-1 text-[10px] text-[#475569] ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  {msg.role === 'assistant' && msg.agentName && (
+                    <span className="text-[#3b82f6]">◈ {msg.agentName}</span>
+                  )}
                   <span>{formatTime(msg.timestamp)}</span>
                   {msg.role === 'assistant' && msg.durationMs != null && msg.durationMs > 0 && (
                     <span>· {msg.durationMs >= 1000 ? `${(msg.durationMs / 1000).toFixed(1)}s` : `${msg.durationMs}ms`}</span>
@@ -268,9 +364,9 @@ export default function Chat() {
             disabled={streaming} rows={1}
             className="flex-1 bg-[#0f172a] border border-[#475569] rounded-lg px-4 py-2.5 text-sm focus:border-[#3b82f6] outline-none resize-none disabled:opacity-40 max-h-32"
             style={{ minHeight: '42px' }} />
-          <button onClick={send} disabled={!input.trim() || streaming}
-            className="px-4 py-2.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-lg text-sm transition-colors shrink-0">
-            {streaming ? '...' : '发送'}
+          <button onClick={streaming ? stopStreaming : send} disabled={!streaming && !input.trim()}
+            className={`px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0 ${streaming ? 'bg-red-500 hover:bg-red-600' : 'bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40'}`}>
+            {streaming ? '停止' : '发送'}
           </button>
         </div>
       </div>

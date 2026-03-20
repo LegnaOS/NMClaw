@@ -23,9 +23,9 @@ if (existsSync(envPath)) {
   }
 }
 
-import { addModel, removeModel, listModels, getModel } from './model-registry.js'
-import { addSkill, removeSkill, listSkills, getSkill } from './skill-registry.js'
-import { addMcp, removeMcp, listMcps, getMcp } from './mcp-registry.js'
+import { addModel, removeModel, listModels, getModel, modifyModel } from './model-registry.js'
+import { addSkill, removeSkill, listSkills, getSkill, modifySkill } from './skill-registry.js'
+import { addMcp, removeMcp, listMcps, getMcp, modifyMcp } from './mcp-registry.js'
 import {
   createAgent, destroyAgent, listAgents, getAgent,
   sweepLifecycle, modifyAgent, touchAgent,
@@ -33,13 +33,14 @@ import {
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
 import { streamTask } from './executor.js'
-import { createGraph, listGraphs, getGraph, removeGraph, executeGraph } from './graph.js'
+import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
 import { loadStore, updateStore } from './store.js'
 import { seedDefaults } from './seed.js'
 import { warmupStdioMcps } from './mcp-runtime.js'
-import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob } from './cron.js'
+import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
+import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing } from './channels/feishu.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
 // Seed default models & agents on first run
@@ -51,6 +52,9 @@ warmupStdioMcps().then(() => console.log('✓ MCP 预连接完成'))
 
 // Start CRON scheduler
 startCron()
+
+// Start Feishu WebSocket monitors for enabled channels
+startAllFeishuMonitors()
 
 const app = new Hono()
 
@@ -89,6 +93,13 @@ app.post('/api/models', async (c) => {
     defaultParams: body.defaultParams,
   })
   return c.json(model, 201)
+})
+
+app.patch('/api/models/:id', async (c) => {
+  const body = await c.req.json()
+  const ok = modifyModel(c.req.param('id'), body)
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json(getModel(c.req.param('id')))
 })
 
 app.delete('/api/models/:id', (c) => {
@@ -135,6 +146,13 @@ app.post('/api/skills', async (c) => {
   return c.json(skill, 201)
 })
 
+app.patch('/api/skills/:id', async (c) => {
+  const body = await c.req.json()
+  const ok = modifySkill(c.req.param('id'), body)
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json(getSkill(c.req.param('id')))
+})
+
 app.delete('/api/skills/:id', (c) => {
   const ok = removeSkill(c.req.param('id'))
   return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
@@ -159,12 +177,41 @@ app.post('/api/mcps', async (c) => {
   return c.json(mcp, 201)
 })
 
+app.patch('/api/mcps/:id', async (c) => {
+  const body = await c.req.json()
+  const ok = modifyMcp(c.req.param('id'), body)
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json(getMcp(c.req.param('id')))
+})
+
 app.delete('/api/mcps/:id', (c) => {
   const ok = removeMcp(c.req.param('id'))
   return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
 })
 
 // ─── Local MCP Scanner ───
+app.post('/api/mcps/import-json', async (c) => {
+  const body = await c.req.json()
+  const { mcpServers } = body as { mcpServers?: Record<string, any> }
+  if (!mcpServers || typeof mcpServers !== 'object') {
+    return c.json({ error: 'mcpServers object required' }, 400)
+  }
+  const imported: any[] = []
+  for (const [name, cfg] of Object.entries(mcpServers)) {
+    const mcp = addMcp({
+      name,
+      description: cfg.description ?? `JSON 导入: ${name}`,
+      transport: cfg.url ? 'sse' : 'stdio',
+      command: cfg.command,
+      args: cfg.args ?? [],
+      url: cfg.url,
+      env: cfg.env ?? {},
+    })
+    imported.push(mcp)
+  }
+  return c.json(imported, 201)
+})
+
 app.get('/api/local-mcps', (c) => {
   const entries = scanLocalMcps()
   const sources = getLocalMcpSources()
@@ -281,25 +328,20 @@ app.post('/api/chat', async (c) => {
 
   if (!messages?.length) return c.json({ error: 'messages required' }, 400)
 
-  // Genesis routing: find best worker for the last user message
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')
-  const matched = matchAgent(lastUserMsg?.content ?? '')
-
+  // Always route to Genesis — it decides delegation via dispatch_to_agent tool
   const agents = listAgents().filter((a) => a.state !== 'destroyed')
   const genesis = agents.find((a) => a.id === 'genesis')
-  const targetAgent = matched || genesis || agents[0]
+  const targetAgent = genesis || agents[0]
 
   if (!targetAgent) return c.json({ error: 'no agents available' }, 400)
 
   return streamSSE(c, async (stream) => {
     try {
-      // Show routing info if dispatched to a worker
-      if (targetAgent.id !== 'genesis' && matched) {
-        await stream.writeSSE({ data: `[${targetAgent.name} 处理中]\n\n` })
-      }
+      // Send agent info marker
+      await stream.writeSSE({ data: `[AGENT_INFO:${targetAgent.id}|${targetAgent.name}]` })
 
       for await (const chunk of streamTask(targetAgent.id, messages)) {
-        await stream.writeSSE({ data: chunk })
+        await stream.writeSSE({ data: JSON.stringify(chunk) })
       }
       await stream.writeSSE({ data: '[DONE]' })
     } catch (err) {
@@ -343,6 +385,13 @@ app.post('/api/graphs', async (c) => {
     edges: body.edges ?? [],
   })
   return c.json(graph, 201)
+})
+
+app.patch('/api/graphs/:id', async (c) => {
+  const body = await c.req.json()
+  const ok = modifyGraph(c.req.param('id'), body)
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json(getGraph(c.req.param('id')))
 })
 
 app.delete('/api/graphs/:id', (c) => {
@@ -431,14 +480,101 @@ app.post('/api/cron', async (c) => {
 
 app.patch('/api/cron/:id', async (c) => {
   const body = await c.req.json()
-  const ok = toggleCronJob(c.req.param('id'), body.enabled)
-  if (!ok) return c.json({ error: 'not found' }, 404)
-  return c.json({ ok: true })
+  const job = updateCronJob(c.req.param('id'), body)
+  if (!job) return c.json({ error: 'not found' }, 404)
+  return c.json(job)
 })
 
 app.delete('/api/cron/:id', (c) => {
   const ok = removeCronJob(c.req.param('id'))
   return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
+})
+
+// ═══════════════════════════════════
+//  Channels (IM Bot Integration)
+// ═══════════════════════════════════
+app.get('/api/channels', (c) => c.json(listChannels()))
+
+app.post('/api/channels', async (c) => {
+  const body = await c.req.json()
+  if (!body.name || !body.type || !body.agentId) {
+    return c.json({ error: 'name, type, agentId required' }, 400)
+  }
+  const channel = addChannel({
+    name: body.name,
+    type: body.type,
+    enabled: body.enabled ?? true,
+    agentId: body.agentId,
+    config: body.config || {},
+  })
+  return c.json(channel, 201)
+})
+
+app.patch('/api/channels/:id', async (c) => {
+  const body = await c.req.json()
+  const ch = modifyChannel(c.req.param('id'), body)
+  if (!ch) return c.json({ error: 'not found' }, 404)
+  return c.json(ch)
+})
+
+app.delete('/api/channels/:id', (c) => {
+  const ok = removeChannel(c.req.param('id'))
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
+})
+
+// Feishu event callback endpoint (legacy webhook mode)
+app.post('/api/channels/:id/feishu/callback', async (c) => {
+  const body = await c.req.json()
+  const result = await handleFeishuEvent(c.req.param('id'), body)
+  return c.json(result)
+})
+
+// Channel monitor control
+app.post('/api/channels/:id/start', async (c) => {
+  const ch = listChannels().find((x) => x.id === c.req.param('id'))
+  if (!ch) return c.json({ error: 'not found' }, 404)
+  const result = await startFeishuMonitor(ch)
+  if (!result.ok) return c.json({ error: result.error, status: 'stopped' }, 500)
+  return c.json({ ok: true, status: 'running' })
+})
+
+app.post('/api/channels/:id/stop', (c) => {
+  stopFeishuMonitor(c.req.param('id'))
+  return c.json({ ok: true, status: 'stopped' })
+})
+
+app.get('/api/channels/:id/status', (c) => {
+  return c.json({ status: getFeishuMonitorStatus(c.req.param('id')) })
+})
+
+// Pairing management
+app.get('/api/pairings', (c) => {
+  const channelId = c.req.query('channelId')
+  return c.json(listPairings(channelId || undefined))
+})
+
+app.post('/api/pairings/:code/approve', (c) => {
+  const ok = approvePairing(c.req.param('code'))
+  if (!ok) return c.json({ error: '配对码不存在或已处理' }, 404)
+  return c.json({ ok: true })
+})
+
+app.post('/api/pairings/:code/reject', (c) => {
+  const ok = rejectPairing(c.req.param('code'))
+  if (!ok) return c.json({ error: '配对码不存在或已处理' }, 404)
+  return c.json({ ok: true })
+})
+
+// Send message to channel (for testing / manual trigger)
+app.post('/api/channels/:id/send', async (c) => {
+  const body = await c.req.json()
+  if (!body.text) return c.json({ error: 'text required' }, 400)
+  try {
+    await sendToChannel(c.req.param('id'), body.text)
+    return c.json({ ok: true })
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'send failed' }, 500)
+  }
 })
 
 // ═══════════════════════════════════

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
+const emptyForm = { name: '', description: '', promptTemplate: '', requiredMcps: '' }
+
 export default function Skills() {
   const [skills, setSkills] = useState<any[]>([])
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', description: '', promptTemplate: '', requiredMcps: '' })
+  const [editId, setEditId] = useState<string | null>(null)
+  const [form, setForm] = useState({ ...emptyForm })
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [uploadError, setUploadError] = useState('')
@@ -13,14 +16,33 @@ export default function Skills() {
   const load = () => api.listSkills().then(setSkills)
   useEffect(() => { load() }, [])
 
+  const cancelForm = () => { setShowForm(false); setEditId(null); setForm({ ...emptyForm }) }
+
   const handleAdd = async () => {
     await api.addSkill({
       ...form,
       requiredMcps: form.requiredMcps ? form.requiredMcps.split(',').map(s => s.trim()) : [],
     })
-    setForm({ name: '', description: '', promptTemplate: '', requiredMcps: '' })
-    setShowForm(false)
-    load()
+    cancelForm(); load()
+  }
+
+  const startEdit = (s: any) => {
+    setEditId(s.id)
+    setForm({
+      name: s.name, description: s.description ?? '',
+      promptTemplate: s.promptTemplate ?? '',
+      requiredMcps: (s.requiredMcps ?? []).join(', '),
+    })
+    setShowForm(true)
+  }
+
+  const handleSave = async () => {
+    if (!editId) return
+    await api.modifySkill(editId, {
+      ...form,
+      requiredMcps: form.requiredMcps ? form.requiredMcps.split(',').map(s => s.trim()) : [],
+    })
+    cancelForm(); load()
   }
 
   const handleRemove = async (id: string) => {
@@ -59,13 +81,18 @@ export default function Skills() {
     <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold">技能库</h2>
-        <button onClick={() => setShowForm(!showForm)} className="px-3 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md text-sm transition-colors">
-          {showForm ? '取消' : '+ 添加技能'}
+        <button onClick={() => { if (showForm) cancelForm(); else { setShowForm(true); setEditId(null); setForm({ ...emptyForm }) } }}
+          className="px-3 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md text-sm transition-colors">
+          {showForm && !editId ? '取消' : '+ 添加技能'}
         </button>
       </div>
 
       {showForm && (
         <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155] space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-[#94a3b8]">{editId ? '编辑技能' : '添加技能'}</p>
+            <button onClick={cancelForm} className="text-xs text-[#64748b] hover:text-[#94a3b8]">取消</button>
+          </div>
           {/* File upload zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
@@ -116,8 +143,8 @@ export default function Skills() {
             <input value={form.requiredMcps} onChange={e => setForm({...form, requiredMcps: e.target.value})}
               className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
           </div>
-          <button onClick={handleAdd} disabled={!form.name} className="px-4 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-md text-sm transition-colors">
-            确认添加
+          <button onClick={editId ? handleSave : handleAdd} disabled={!form.name} className="px-4 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-md text-sm transition-colors">
+            {editId ? '保存修改' : '确认添加'}
           </button>
         </div>
       )}
@@ -134,7 +161,10 @@ export default function Skills() {
                     <span className="text-sm font-medium">{s.name}</span>
                     <span className="text-xs text-[#64748b] font-mono ml-2">{s.id}</span>
                   </div>
-                  <button onClick={() => handleRemove(s.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                  <div className="space-x-2">
+                    <button onClick={() => startEdit(s)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
+                    <button onClick={() => handleRemove(s.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                  </div>
                 </div>
                 <p className="text-xs text-[#94a3b8] mt-1">{s.description}</p>
                 {s.promptTemplate && (

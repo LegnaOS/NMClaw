@@ -38,6 +38,15 @@ export function removeMcp(id: string): boolean {
   return found
 }
 
+export function modifyMcp(id: string, patch: Partial<Pick<McpConfig, 'name' | 'description' | 'transport' | 'command' | 'args' | 'url' | 'env'>>): boolean {
+  let found = false
+  updateStore((s) => {
+    const m = s.mcps.find((x) => x.id === id)
+    if (m) { Object.assign(m, patch); found = true }
+  })
+  return found
+}
+
 export function listMcps(): McpConfig[] {
   return loadStore().mcps
 }

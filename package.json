@@ -1,6 +1,6 @@
 {
   "name": "nmclaw",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "description": "Agent orchestration platform — Genesis Agent as kernel, not God Agent",
   "type": "module",
   "bin": {
@@ -28,6 +28,7 @@
     "@anthropic-ai/sdk": "^0.80.0",
     "@hono/node-server": "^1.19.11",
     "@inquirer/prompts": "^8.3.2",
+    "@larksuiteoapi/node-sdk": "^1.59.0",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
     "hono": "^4.12.8",

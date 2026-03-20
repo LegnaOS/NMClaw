@@ -19,7 +19,7 @@ export function seedDefaults(): void {
     costTier: 'high',
     config: {
       apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN',
-      baseUrl: process.env.ANTHROPIC_BASE_URL || 'http://localhost:8991',
+      baseUrl: process.env.ANTHROPIC_BASE_URL || undefined,
     },
     createdAt: now,
   }
@@ -63,6 +63,22 @@ export function seedDefaults(): void {
     createdAt: now,
   }
 
+  const shellMcp: McpConfig = {
+    id: 'shell_builtin',
+    name: 'shell',
+    description: '执行系统 shell 命令（zsh），可用于系统控制、安装软件、运行脚本等',
+    transport: 'builtin',
+    createdAt: now,
+  }
+
+  const platformMcp: McpConfig = {
+    id: 'platform_builtin',
+    name: 'platform',
+    description: '平台管理工具：创建/修改/销毁 Agent，查看模型/技能/MCP，管理定时任务',
+    transport: 'builtin',
+    createdAt: now,
+  }
+
   // ─── Agents ───
 
   const genesisAgent: AgentConfig = {
@@ -71,13 +87,31 @@ export function seedDefaults(): void {
     description: '平台内核，负责调度和路由用户请求到合适的 Worker Agent',
     modelId: anthropicModel.id,
     skillIds: [],
-    mcpIds: [timeMcp.id, weatherMcp.id, filesystemMcp.id],
+    mcpIds: [timeMcp.id, weatherMcp.id, filesystemMcp.id, shellMcp.id, platformMcp.id],
     systemPrompt: [
-      '你是 NMClaw 平台的创世 Agent（Genesis Agent），你是平台的内核和调度中心。',
-      '你的职责：',
-      '1. 理解用户的请求意图',
-      '2. 当没有合适的 Worker Agent 时，你直接回答用户',
-      '3. 你拥有时间、天气、文件系统工具，需要时请主动调用',
+      '你是 NMClaw 平台的创世 Agent（Genesis Agent），你是平台的调度中心和管理者。',
+      '',
+      '═══ 第一优先级：委派任务 ═══',
+      '收到用户请求时，你必须：',
+      '1. 先调用 list_agents 查看所有可用的 Worker Agent',
+      '2. 判断是否有 Worker Agent 适合处理这个请求（根据名称、描述匹配）',
+      '3. 如果有合适的 Worker，立即调用 dispatch_to_agent 委派任务，不要自己处理',
+      '4. 只有当没有合适的 Worker 时，才自己处理',
+      '',
+      '═══ 第二优先级：平台管理 ═══',
+      '以下操作由你直接处理（不委派）：',
+      '- 创建/修改/销毁 Agent → 用 create_agent / modify_agent / destroy_agent',
+      '- 管理定时任务 → 用 create_cron_job / list_cron_jobs / remove_cron_job',
+      '- 查看平台状态 → 用 list_agents / list_models / list_mcps / list_skills',
+      '- 创建 Agent 前，先调用 list_models 和 list_mcps 获取可用 ID',
+      '',
+      '═══ 第三优先级：直接执行 ═══',
+      '没有合适 Worker 且不是管理操作时，用你自己的工具处理：',
+      '- 系统命令 → run_shell_command',
+      '- 文件操作 → read_file / write_file / list_directory',
+      '- 时间查询 → get_current_time',
+      '- 天气查询 → get_weather',
+      '',
       '请用中文回答。',
     ].join('\n'),
     lifecycle: { ttl: DEFAULT_TTL * 100, idleTimeout: DEFAULT_IDLE_TIMEOUT * 100, autoRenew: true },
@@ -125,7 +159,7 @@ export function seedDefaults(): void {
 
   updateStore((s) => {
     s.models.push(anthropicModel, deepseekModel)
-    s.mcps.push(timeMcp, weatherMcp, filesystemMcp)
+    s.mcps.push(timeMcp, weatherMcp, filesystemMcp, shellMcp, platformMcp)
     s.agents.push(genesisAgent, timeAgent, weatherAgent)
   })
 

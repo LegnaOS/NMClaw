@@ -14,7 +14,8 @@ export interface CronJob {
 
 let timer: ReturnType<typeof setInterval> | null = null
 
-function parseCron(expr: string): { minute: number[]; hour: number[]; dom: number[]; month: number[]; dow: number[] } | null {
+function parseCron(expr: string | undefined): { minute: number[]; hour: number[]; dom: number[]; month: number[]; dow: number[] } | null {
+  if (!expr) return null
   const parts = expr.trim().split(/\s+/)
   if (parts.length !== 5) return null
   const parse = (field: string, min: number, max: number): number[] => {
@@ -122,6 +123,22 @@ export function removeCronJob(id: string): boolean {
     if (idx >= 0) { jobs.splice(idx, 1); found = true }
   })
   return found
+}
+
+export function updateCronJob(id: string, data: Partial<Pick<CronJob, 'name' | 'schedule' | 'agentId' | 'prompt' | 'enabled'>>): CronJob | null {
+  let result: CronJob | null = null
+  updateStore((s) => {
+    const jobs: CronJob[] = (s as any).cronJobs || []
+    const j = jobs.find((j) => j.id === id)
+    if (!j) return
+    if (data.name != null) j.name = data.name
+    if (data.schedule != null) j.schedule = data.schedule
+    if (data.agentId != null) j.agentId = data.agentId
+    if (data.prompt != null) j.prompt = data.prompt
+    if (data.enabled != null) j.enabled = data.enabled
+    result = { ...j }
+  })
+  return result
 }
 
 export function toggleCronJob(id: string, enabled: boolean): boolean {

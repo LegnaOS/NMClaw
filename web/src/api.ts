@@ -17,10 +17,12 @@ export const api = {
 
   listModels: () => request<any[]>('/models'),
   addModel: (data: any) => request<any>('/models', { method: 'POST', body: JSON.stringify(data) }),
+  modifyModel: (id: string, data: any) => request<any>(`/models/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   removeModel: (id: string) => request<any>(`/models/${id}`, { method: 'DELETE' }),
 
   listSkills: () => request<any[]>('/skills'),
   addSkill: (data: any) => request<any>('/skills', { method: 'POST', body: JSON.stringify(data) }),
+  modifySkill: (id: string, data: any) => request<any>(`/skills/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   removeSkill: (id: string) => request<any>(`/skills/${id}`, { method: 'DELETE' }),
   uploadSkill: async (file: File) => {
     const form = new FormData()
@@ -35,7 +37,9 @@ export const api = {
 
   listMcps: () => request<any[]>('/mcps'),
   addMcp: (data: any) => request<any>('/mcps', { method: 'POST', body: JSON.stringify(data) }),
+  modifyMcp: (id: string, data: any) => request<any>(`/mcps/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   removeMcp: (id: string) => request<any>(`/mcps/${id}`, { method: 'DELETE' }),
+  importMcpJson: (mcpServers: Record<string, any>) => request<any[]>('/mcps/import-json', { method: 'POST', body: JSON.stringify({ mcpServers }) }),
 
   listAgents: (all = false) => request<any[]>(`/agents${all ? '?all=true' : ''}`),
   getAgent: (id: string) => request<any>(`/agents/${id}`),
@@ -57,6 +61,7 @@ export const api = {
   listGraphs: () => request<any[]>('/graphs'),
   getGraph: (id: string) => request<any>(`/graphs/${id}`),
   createGraph: (data: any) => request<any>('/graphs', { method: 'POST', body: JSON.stringify(data) }),
+  modifyGraph: (id: string, data: any) => request<any>(`/graphs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   removeGraph: (id: string) => request<any>(`/graphs/${id}`, { method: 'DELETE' }),
 
   // ClawHub
@@ -67,19 +72,36 @@ export const api = {
   // CRON
   listCronJobs: () => request<any[]>('/cron'),
   addCronJob: (data: any) => request<any>('/cron', { method: 'POST', body: JSON.stringify(data) }),
+  modifyCronJob: (id: string, data: any) => request<any>(`/cron/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   toggleCronJob: (id: string, enabled: boolean) => request<any>(`/cron/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) }),
   removeCronJob: (id: string) => request<any>(`/cron/${id}`, { method: 'DELETE' }),
+
+  // Channels
+  listChannels: () => request<any[]>('/channels'),
+  addChannel: (data: any) => request<any>('/channels', { method: 'POST', body: JSON.stringify(data) }),
+  modifyChannel: (id: string, data: any) => request<any>(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  removeChannel: (id: string) => request<any>(`/channels/${id}`, { method: 'DELETE' }),
+  sendChannelMessage: (id: string, text: string) => request<any>(`/channels/${id}/send`, { method: 'POST', body: JSON.stringify({ text }) }),
+  startChannel: (id: string) => request<any>(`/channels/${id}/start`, { method: 'POST' }),
+  stopChannel: (id: string) => request<any>(`/channels/${id}/stop`, { method: 'POST' }),
+  getChannelStatus: (id: string) => request<any>(`/channels/${id}/status`),
+
+  // Pairings
+  listPairings: (channelId?: string) => request<any[]>(`/pairings${channelId ? `?channelId=${channelId}` : ''}`),
+  approvePairing: (code: string) => request<any>(`/pairings/${code}/approve`, { method: 'POST' }),
+  rejectPairing: (code: string) => request<any>(`/pairings/${code}/reject`, { method: 'POST' }),
 
   // Local MCP Scanner
   scanLocalMcps: () => request<any>('/local-mcps'),
   importLocalMcp: (data: any) => request<any>('/local-mcps/import', { method: 'POST', body: JSON.stringify(data) }),
 
   // Chat (streaming) — always routes through Genesis Agent
-  chat: async function* (messages: { role: string; content: string }[]): AsyncGenerator<string> {
+  chat: async function* (messages: { role: string; content: string }[], signal?: AbortSignal): AsyncGenerator<string> {
     const res = await fetch(`${BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages }),
+      signal,
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }))
@@ -102,7 +124,7 @@ export const api = {
           const data = line.slice(6)
           if (data === '[DONE]') return
           if (data.startsWith('[ERROR]')) throw new Error(data.slice(8))
-          yield data
+          try { yield JSON.parse(data) } catch { yield data }
         }
       }
     }

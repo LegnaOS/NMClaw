@@ -4,8 +4,10 @@ web/dist/
 *.js.map
 .nmclaw/
 *.tgz
+*.zip
 .DS_Store
 Thumbs.db
 .env
 .env.local
 .augment-rag/
+docs/ai-news/

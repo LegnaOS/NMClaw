@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { getMcp, listMcps } from './mcp-registry.js'
+import { listModels } from './model-registry.js'
+import { listSkills } from './skill-registry.js'
+import { createAgent, listAgents, destroyAgent, modifyAgent } from './agent-manager.js'
+import { addCronJob, listCronJobs, removeCronJob } from './cron.js'
 import type { McpConfig } from './types.js'
 
 // ─── Types ───
@@ -98,6 +102,110 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
   }
 }
 
+async function builtinShell(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  const { execSync } = await import('node:child_process')
+  const command = input.command as string
+  if (!command) return { content: '缺少 command 参数', isError: true }
+  const timeout = (input.timeout as number) || 30000
+  try {
+    const output = execSync(command, {
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 1024 * 1024,
+      shell: '/bin/zsh',
+    })
+    return { content: output || '(命令执行成功，无输出)' }
+  } catch (e: any) {
+    const stderr = e.stderr?.toString() || ''
+    const stdout = e.stdout?.toString() || ''
+    return { content: `退出码: ${e.status ?? 'unknown'}\nstdout: ${stdout}\nstderr: ${stderr}`.trim(), isError: true }
+  }
+}
+
+async function builtinPlatform(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    if (name === 'dispatch_to_agent') {
+      const agentId = input.agentId as string
+      const prompt = input.prompt as string
+      if (!agentId || !prompt) return { content: '缺少 agentId 或 prompt', isError: true }
+      const agent = listAgents().find(a => a.id === agentId)
+      if (!agent) return { content: `Agent ${agentId} 不存在`, isError: true }
+      // Dynamic import to avoid circular dependency
+      const { streamTask } = await import('./executor.js')
+      let output = ''
+      for await (const chunk of streamTask(agentId, [{ role: 'user' as const, content: prompt }])) {
+        // Skip internal markers
+        if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
+            chunk.startsWith('[STREAM_META:') || chunk.startsWith('[FILE_OUTPUT:') ||
+            chunk.startsWith('[AGENT_INFO:')) continue
+        output += chunk
+      }
+      output = output.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
+      return { content: `[${agent.name} 的回复]\n\n${output || '(无回复)'}` }
+    }
+    if (name === 'list_agents') {
+      const agents = listAgents().map(a => ({ id: a.id, name: a.name, description: a.description, state: a.state, modelId: a.modelId }))
+      return { content: JSON.stringify(agents, null, 2) }
+    }
+    if (name === 'list_models') {
+      const models = listModels().map(m => ({ id: m.id, name: m.name, provider: m.provider, capabilities: m.capabilities }))
+      return { content: JSON.stringify(models, null, 2) }
+    }
+    if (name === 'list_skills') {
+      const skills = listSkills().map(s => ({ id: s.id, name: s.name, description: s.description }))
+      return { content: JSON.stringify(skills, null, 2) }
+    }
+    if (name === 'list_mcps') {
+      const mcps = listMcps().map(m => ({ id: m.id, name: m.name, description: m.description, transport: m.transport }))
+      return { content: JSON.stringify(mcps, null, 2) }
+    }
+    if (name === 'create_agent') {
+      const agent = createAgent({
+        name: input.name as string,
+        description: input.description as string || '',
+        modelId: input.modelId as string,
+        skillIds: (input.skillIds as string[]) ?? [],
+        mcpIds: (input.mcpIds as string[]) ?? [],
+        systemPrompt: (input.systemPrompt as string) ?? '',
+        ttl: input.ttl as number | undefined,
+        idleTimeout: input.idleTimeout as number | undefined,
+        autoRenew: input.autoRenew as boolean | undefined,
+      })
+      return { content: `Agent 创建成功:\n${JSON.stringify(agent, null, 2)}` }
+    }
+    if (name === 'modify_agent') {
+      const id = input.agentId as string
+      const { agentId: _, ...patch } = input as any
+      const ok = modifyAgent(id, patch)
+      return ok ? { content: `Agent ${id} 已更新` } : { content: `Agent ${id} 不存在`, isError: true }
+    }
+    if (name === 'destroy_agent') {
+      const ok = destroyAgent(input.agentId as string)
+      return ok ? { content: `Agent ${input.agentId} 已销毁` } : { content: `Agent ${input.agentId} 不存在`, isError: true }
+    }
+    if (name === 'create_cron_job') {
+      const job = addCronJob({
+        schedule: input.cron as string,
+        agentId: input.agentId as string,
+        prompt: input.prompt as string,
+        name: (input.name as string) || '',
+        enabled: true,
+      })
+      return { content: `定时任务创建成功:\n${JSON.stringify(job, null, 2)}` }
+    }
+    if (name === 'list_cron_jobs') {
+      return { content: JSON.stringify(listCronJobs(), null, 2) }
+    }
+    if (name === 'remove_cron_job') {
+      const ok = removeCronJob(input.jobId as string)
+      return ok ? { content: `定时任务 ${input.jobId} 已删除` } : { content: `定时任务 ${input.jobId} 不存在`, isError: true }
+    }
+    return { content: `未知平台操作: ${name}`, isError: true }
+  } catch (e) {
+    return { content: `平台操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
 // ─── Built-in MCP registry ───
 
 interface BuiltinMcp {
@@ -176,6 +284,130 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
       },
     ],
     call: builtinFilesystem,
+  },
+  shell: {
+    tools: [{
+      name: 'run_shell_command',
+      description: '在系统 shell 中执行命令（zsh），可用于系统控制、安装软件、运行脚本等',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: '要执行的 shell 命令' },
+          timeout: { type: 'number', description: '超时时间（毫秒），默认 30000' },
+        },
+        required: ['command'],
+      },
+    }],
+    call: builtinShell,
+  },
+  platform: {
+    tools: [
+      {
+        name: 'dispatch_to_agent',
+        description: '将任务委派给指定的 Worker Agent 执行。这是你最重要的工具——当用户的请求匹配某个 Worker Agent 的能力时，必须优先使用此工具委派，而不是自己处理。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: '目标 Agent 的 ID（先用 list_agents 查看）' },
+            prompt: { type: 'string', description: '发送给该 Agent 的完整提示词' },
+          },
+          required: ['agentId', 'prompt'],
+        },
+      },
+      {
+        name: 'list_agents',
+        description: '列出平台上所有 Agent（包括名称、状态、模型等信息）',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'list_models',
+        description: '列出平台上所有可用的 AI 模型',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'list_skills',
+        description: '列出平台上所有可用的技能',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'list_mcps',
+        description: '列出平台上所有可用的 MCP 工具',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'create_agent',
+        description: '创建一个新的 Worker Agent。需要指定名称、描述、模型ID，可选技能ID列表、MCP ID列表、系统提示词',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Agent 名称' },
+            description: { type: 'string', description: 'Agent 描述，用于路由匹配' },
+            modelId: { type: 'string', description: '使用的模型 ID（先用 list_models 查看可用模型）' },
+            skillIds: { type: 'array', items: { type: 'string' }, description: '技能 ID 列表（可选）' },
+            mcpIds: { type: 'array', items: { type: 'string' }, description: 'MCP 工具 ID 列表（可选，先用 list_mcps 查看）' },
+            systemPrompt: { type: 'string', description: 'Agent 的系统提示词，定义其行为和角色' },
+            autoRenew: { type: 'boolean', description: '是否自动续期（默认 false）' },
+          },
+          required: ['name', 'description', 'modelId'],
+        },
+      },
+      {
+        name: 'modify_agent',
+        description: '修改已有 Agent 的配置（名称、描述、模型、技能、MCP、系统提示词、状态等）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: '要修改的 Agent ID' },
+            name: { type: 'string' },
+            description: { type: 'string' },
+            modelId: { type: 'string' },
+            skillIds: { type: 'array', items: { type: 'string' } },
+            mcpIds: { type: 'array', items: { type: 'string' } },
+            systemPrompt: { type: 'string' },
+            state: { type: 'string', enum: ['active', 'idle'], description: '激活或停用' },
+          },
+          required: ['agentId'],
+        },
+      },
+      {
+        name: 'destroy_agent',
+        description: '销毁一个 Agent',
+        inputSchema: {
+          type: 'object',
+          properties: { agentId: { type: 'string', description: '要销毁的 Agent ID' } },
+          required: ['agentId'],
+        },
+      },
+      {
+        name: 'create_cron_job',
+        description: '创建定时任务，让指定 Agent 按 cron 表达式定期执行任务',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: '任务名称' },
+            cron: { type: 'string', description: 'Cron 表达式，如 "0 9 * * *" 表示每天9点' },
+            agentId: { type: 'string', description: '执行任务的 Agent ID' },
+            prompt: { type: 'string', description: '发送给 Agent 的提示词' },
+          },
+          required: ['cron', 'agentId', 'prompt'],
+        },
+      },
+      {
+        name: 'list_cron_jobs',
+        description: '列出所有定时任务',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'remove_cron_job',
+        description: '删除一个定时任务',
+        inputSchema: {
+          type: 'object',
+          properties: { jobId: { type: 'string', description: '定时任务 ID' } },
+          required: ['jobId'],
+        },
+      },
+    ],
+    call: builtinPlatform,
   },
 }
 
@@ -335,6 +567,30 @@ export async function getAllTools(): Promise<ToolDef[]> {
       }
     }
     // sse / streamable-http: future
+  }
+
+  return tools
+}
+
+/** Get tools only for MCPs bound to a specific agent */
+export async function getToolsForAgent(mcpIds: string[]): Promise<ToolDef[]> {
+  const mcps = listMcps().filter((m) => mcpIds.includes(m.id))
+  const tools: ToolDef[] = []
+
+  for (const mcp of mcps) {
+    if (mcp.transport === 'builtin') {
+      const builtin = BUILTIN_REGISTRY[mcp.name]
+      if (builtin) {
+        tools.push(...builtin.tools.map((t) => ({ ...t, mcpId: mcp.id })))
+      }
+    } else if (mcp.transport === 'stdio') {
+      try {
+        const client = await getStdioClient(mcp)
+        tools.push(...client.getTools())
+      } catch (e) {
+        console.error(`Failed to connect to MCP ${mcp.name}:`, e)
+      }
+    }
   }
 
   return tools

@@ -19,6 +19,8 @@ const DEFAULT_STORE: StoreData = {
     neverBypass: ['delete_data', 'modify_model_registry', 'access_credentials'],
   },
   graphs: [],
+  channels: [],
+  pairings: [],
 }
 
 function ensureDir(): void {

@@ -17,17 +17,25 @@ const TRANSPORT_COLORS: Record<string, string> = {
   'streamable-http': 'bg-yellow-500/20 text-yellow-400',
 }
 
+const emptyForm = { name: '', description: '', transport: 'stdio', command: '', args: '', url: '' }
+
 export default function Mcps() {
   const [mcps, setMcps] = useState<any[]>([])
   const [localMcps, setLocalMcps] = useState<any[]>([])
   const [localSources, setLocalSources] = useState<any[]>([])
   const [showForm, setShowForm] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
   const [showLocal, setShowLocal] = useState(false)
+  const [showJsonImport, setShowJsonImport] = useState(false)
+  const [jsonText, setJsonText] = useState('')
+  const [jsonError, setJsonError] = useState('')
   const [importing, setImporting] = useState<string | null>(null)
-  const [form, setForm] = useState({ name: '', description: '', transport: 'stdio', command: '', args: '', url: '' })
+  const [form, setForm] = useState({ ...emptyForm })
 
   const load = () => api.listMcps().then(setMcps)
   useEffect(() => { load() }, [])
+
+  const cancelForm = () => { setShowForm(false); setEditId(null); setForm({ ...emptyForm }) }
 
   const scanLocal = async () => {
     setShowLocal(true)
@@ -43,15 +51,48 @@ export default function Mcps() {
       ...form,
       args: form.args ? form.args.split(/\s+/) : [],
     })
-    setForm({ name: '', description: '', transport: 'stdio', command: '', args: '', url: '' })
-    setShowForm(false)
-    load()
+    cancelForm(); load()
+  }
+
+  const startEdit = (m: any) => {
+    setEditId(m.id)
+    setForm({
+      name: m.name, description: m.description ?? '',
+      transport: m.transport, command: m.command ?? '',
+      args: (m.args ?? []).join(' '), url: m.url ?? '',
+    })
+    setShowForm(true)
+  }
+
+  const handleSave = async () => {
+    if (!editId) return
+    await api.modifyMcp(editId, {
+      ...form,
+      args: form.args ? form.args.split(/\s+/) : [],
+    })
+    cancelForm(); load()
   }
 
   const handleRemove = async (id: string) => {
     if (!confirm('确认移除此MCP?')) return
     await api.removeMcp(id)
     load()
+  }
+
+  const handleJsonImport = async () => {
+    setJsonError('')
+    try {
+      const parsed = JSON.parse(jsonText)
+      const mcpServers = parsed.mcpServers ?? parsed
+      if (typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
+        setJsonError('格式错误: 需要 { "mcpServers": { ... } } 或 { "name": { command, args } }')
+        return
+      }
+      await api.importMcpJson(mcpServers)
+      setShowJsonImport(false); setJsonText(''); load()
+    } catch (err) {
+      setJsonError(err instanceof Error ? err.message : 'JSON 解析失败')
+    }
   }
 
   const handleImport = async (entry: any) => {
@@ -86,15 +127,23 @@ export default function Mcps() {
             className="px-3 py-1.5 bg-[#334155] hover:bg-[#475569] rounded-md text-sm transition-colors">
             {showLocal ? '刷新扫描' : '扫描本地 MCP'}
           </button>
-          <button onClick={() => setShowForm(!showForm)}
+          <button onClick={() => setShowJsonImport(!showJsonImport)}
+            className="px-3 py-1.5 bg-[#334155] hover:bg-[#475569] rounded-md text-sm transition-colors">
+            JSON 导入
+          </button>
+          <button onClick={() => { if (showForm) cancelForm(); else { setShowForm(true); setEditId(null); setForm({ ...emptyForm }) } }}
             className="px-3 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md text-sm transition-colors">
-            {showForm ? '取消' : '+ 添加 MCP'}
+            {showForm && !editId ? '取消' : '+ 添加 MCP'}
           </button>
         </div>
       </div>
 
       {showForm && (
         <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155] space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-[#94a3b8]">{editId ? '编辑 MCP' : '添加 MCP'}</p>
+            <button onClick={cancelForm} className="text-xs text-[#64748b] hover:text-[#94a3b8]">取消</button>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-[#94a3b8] mb-1">MCP 名称</label>
@@ -134,8 +183,26 @@ export default function Mcps() {
                 placeholder="http://localhost:3001/mcp" className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
             </div>
           )}
-          <button onClick={handleAdd} disabled={!form.name} className="px-4 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-md text-sm transition-colors">
-            确认添加
+          <button onClick={editId ? handleSave : handleAdd} disabled={!form.name} className="px-4 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-md text-sm transition-colors">
+            {editId ? '保存修改' : '确认添加'}
+          </button>
+        </div>
+      )}
+
+      {/* JSON Import */}
+      {showJsonImport && (
+        <div className="bg-[#1e293b] rounded-lg p-4 border border-[#334155] space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-[#94a3b8]">JSON 导入 MCP (Claude Desktop / Cursor 格式)</p>
+            <button onClick={() => { setShowJsonImport(false); setJsonText(''); setJsonError('') }} className="text-xs text-[#64748b] hover:text-[#94a3b8]">关闭</button>
+          </div>
+          <textarea value={jsonText} onChange={(e) => setJsonText(e.target.value)} rows={8}
+            placeholder={'{\n  "mcpServers": {\n    "filesystem": {\n      "command": "npx",\n      "args": ["-y", "@anthropic/mcp-filesystem"]\n    }\n  }\n}'}
+            className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-2 text-xs font-mono focus:border-[#3b82f6] outline-none resize-none" />
+          {jsonError && <p className="text-xs text-red-400">{jsonError}</p>}
+          <button onClick={handleJsonImport} disabled={!jsonText.trim()}
+            className="px-4 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded-md text-sm transition-colors">
+            导入
           </button>
         </div>
       )}
@@ -242,7 +309,8 @@ export default function Mcps() {
                       {m.command} {m.args?.join(' ')}
                     </td>
                     <td className="p-3 text-xs text-[#94a3b8]">{m.description}</td>
-                    <td className="p-3 text-right">
+                    <td className="p-3 text-right space-x-2">
+                      <button onClick={() => startEdit(m)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
                       <button onClick={() => handleRemove(m.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
                     </td>
                   </tr>

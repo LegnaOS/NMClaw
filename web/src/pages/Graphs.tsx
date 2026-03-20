@@ -37,14 +37,35 @@ const nodeTypes = { agent: AgentNode }
 
 // ─── Graph Editor (inner, needs ReactFlowProvider) ───
 
-function GraphEditor({ agents, onSave }: {
+function GraphEditor({ agents, onSave, initial }: {
   agents: any[]
   onSave: (data: { name: string; description: string; nodes: any[]; edges: any[] }) => void
+  initial?: { name: string; description: string; nodes: any[]; edges: any[] } | null
 }) {
-  const [nodes, setNodes] = useState<Node[]>([])
-  const [edges, setEdges] = useState<Edge[]>([])
-  const [name, setName] = useState('')
-  const [desc, setDesc] = useState('')
+  const [nodes, setNodes] = useState<Node[]>(() => {
+    if (!initial?.nodes) return []
+    return initial.nodes.map((n: any, i: number) => {
+      const agent = agents.find((a: any) => a.id === n.agentId)
+      return {
+        id: n.id,
+        type: 'agent' as const,
+        position: { x: 100 + (i % 3) * 200, y: 60 + Math.floor(i / 3) * 120 },
+        data: { label: n.label || agent?.name || '?', agentName: agent?.name || '?', agentId: n.agentId },
+      }
+    })
+  })
+  const [edges, setEdges] = useState<Edge[]>(() => {
+    if (!initial?.edges) return []
+    return initial.edges.map((e: any, i: number) => ({
+      id: e.id || `e${i}`,
+      source: e.from,
+      target: e.to,
+      animated: true,
+      style: { stroke: '#3b82f6' },
+    }))
+  })
+  const [name, setName] = useState(initial?.name ?? '')
+  const [desc, setDesc] = useState(initial?.description ?? '')
   const { screenToFlowPosition } = useReactFlow()
 
   const onNodesChange: OnNodesChange = useCallback(
@@ -103,7 +124,7 @@ function GraphEditor({ agents, onSave }: {
           className="bg-[#0f172a] border border-[#475569] rounded px-2 py-1 text-xs flex-1 focus:border-[#3b82f6] outline-none" />
         <button onClick={handleSave} disabled={!name.trim() || nodes.length === 0}
           className="px-3 py-1 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 rounded text-xs transition-colors">
-          保存 Graph
+          {initial ? '保存修改' : '保存 Graph'}
         </button>
       </div>
 
@@ -200,6 +221,7 @@ export default function Graphs() {
   const [graphs, setGraphs] = useState<any[]>([])
   const [agents, setAgents] = useState<any[]>([])
   const [showEditor, setShowEditor] = useState(false)
+  const [editingGraph, setEditingGraph] = useState<any>(null)
   const [selected, setSelected] = useState<any>(null)
   const [execInput, setExecInput] = useState('')
   const [execEvents, setExecEvents] = useState<any[]>([])
@@ -212,9 +234,17 @@ export default function Graphs() {
   useEffect(() => { load() }, [])
 
   const handleSave = async (data: { name: string; description: string; nodes: any[]; edges: any[] }) => {
-    await api.createGraph(data)
-    setShowEditor(false)
-    load()
+    if (editingGraph) {
+      await api.modifyGraph(editingGraph.id, data)
+    } else {
+      await api.createGraph(data)
+    }
+    setShowEditor(false); setEditingGraph(null); load()
+  }
+
+  const startEdit = (g: any) => {
+    setEditingGraph(g)
+    setShowEditor(true)
   }
 
   const handleDelete = async (id: string) => {
@@ -243,15 +273,15 @@ export default function Graphs() {
     return (
       <div className="flex flex-col h-full">
         <div className="shrink-0 px-6 py-3 border-b border-[#334155] flex items-center justify-between bg-[#1e293b]">
-          <h2 className="text-sm font-bold">Graph 编排 — 拖拽编辑器</h2>
-          <button onClick={() => setShowEditor(false)}
+          <h2 className="text-sm font-bold">{editingGraph ? `编辑 Graph — ${editingGraph.name}` : 'Graph 编排 — 拖拽编辑器'}</h2>
+          <button onClick={() => { setShowEditor(false); setEditingGraph(null) }}
             className="px-3 py-1 text-xs text-[#94a3b8] hover:text-[#f1f5f9] border border-[#475569] rounded transition-colors">
             返回列表
           </button>
         </div>
         <div className="flex-1 min-h-0">
           <ReactFlowProvider>
-            <GraphEditor agents={agents} onSave={handleSave} />
+            <GraphEditor agents={agents} onSave={handleSave} initial={editingGraph} />
           </ReactFlowProvider>
         </div>
       </div>
@@ -262,7 +292,7 @@ export default function Graphs() {
     <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold">Agent Graph 编排</h2>
-        <button onClick={() => setShowEditor(true)}
+        <button onClick={() => { setShowEditor(true); setEditingGraph(null) }}
           className="px-3 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] rounded-md text-sm transition-colors">
           + 创建 Graph
         </button>
@@ -286,8 +316,12 @@ export default function Graphs() {
                       <span className="text-sm font-medium">{g.name}</span>
                       <span className="text-xs text-[#64748b] font-mono ml-2">{g.id}</span>
                     </div>
-                    <button onClick={(e) => { e.stopPropagation(); handleDelete(g.id) }}
-                      className="text-xs text-red-400 hover:text-red-300">删除</button>
+                    <div className="space-x-2">
+                      <button onClick={(e) => { e.stopPropagation(); startEdit(g) }}
+                        className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
+                      <button onClick={(e) => { e.stopPropagation(); handleDelete(g.id) }}
+                        className="text-xs text-red-400 hover:text-red-300">删除</button>
+                    </div>
                   </div>
                   <p className="text-xs text-[#94a3b8] mt-0.5">{g.nodes?.length ?? 0} 节点, {g.edges?.length ?? 0} 连线</p>
                 </div>

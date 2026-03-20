@@ -128,6 +128,8 @@ export interface StoreData {
   traces: TraceSpan[]
   bypass: BypassConfig
   graphs: GraphConfig[]
+  channels: ChannelConfig[]
+  pairings: PairingRecord[]
 }
 
 // --- LLM Adapter ---
@@ -190,6 +192,51 @@ export type PermissionAction =
   | 'mcp:add'
   | 'mcp:remove'
   | 'task:dispatch'
+
+// --- Channel (IM Bot Integration) ---
+
+export type ChannelType = 'feishu' | 'wecom' | 'dingtalk'
+
+export interface ChannelConfig {
+  id: string
+  name: string
+  type: ChannelType
+  enabled: boolean
+  agentId: string          // which agent handles messages from this channel
+  config: FeishuChannelConfig | Record<string, unknown>
+  createdAt: number
+}
+
+export interface FeishuChannelConfig {
+  mode: 'websocket' | 'webhook'
+  // WebSocket mode (推荐): 通过飞书 SDK 长连接收发消息，无需公网 URL
+  appId?: string
+  appSecret?: string
+  domain?: 'feishu' | 'lark'   // feishu=国内, lark=国际版
+  streaming?: boolean           // 流式卡片回复 (default true)
+  // Access control
+  requireMention?: boolean      // 群聊中是否需要 @机器人 才回复 (default false)
+  groupPolicy?: 'open' | 'allowlist'  // open=所有人可用, allowlist=仅白名单用户
+  allowedUsers?: string[]       // 白名单用户 open_id 列表
+  // Webhook mode: 仅发送
+  webhookUrl?: string
+  webhookSecret?: string
+  // Legacy fields (backward compat)
+  encryptKey?: string
+  verificationToken?: string
+}
+
+// --- Channel Pairing (Access Control) ---
+
+export interface PairingRecord {
+  code: string            // 6-digit pairing code
+  channelId: string
+  userId: string          // feishu open_id
+  userName?: string
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: number
+  approvedAt?: number
+}
 
 // --- Constants ---
 
