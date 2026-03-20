@@ -76,12 +76,14 @@ export function updateAgentState(id: string, state: AgentState): void {
   })
 }
 
-export function modifyAgent(id: string, patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'modelId' | 'skillIds' | 'mcpIds' | 'systemPrompt'>>): boolean {
+export function modifyAgent(id: string, patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'modelId' | 'skillIds' | 'mcpIds' | 'systemPrompt' | 'state'>> & { lifecycle?: Partial<AgentConfig['lifecycle']> }): boolean {
   let found = false
   updateStore((s) => {
     const agent = s.agents.find((a) => a.id === id)
     if (agent) {
-      Object.assign(agent, patch)
+      const { lifecycle: lcPatch, ...rest } = patch
+      Object.assign(agent, rest)
+      if (lcPatch) Object.assign(agent.lifecycle, lcPatch)
       found = true
     }
   })
