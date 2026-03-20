@@ -1,0 +1,197 @@
+// ============================================================
+// NMClaw — Core Type Definitions
+// ============================================================
+
+// --- Model Library ---
+
+export type CostTier = 'high' | 'medium' | 'low' | 'free'
+
+export interface ModelConfig {
+  id: string
+  name: string
+  provider: string // anthropic, openai, deepseek, ollama, etc.
+  capabilities: string[]
+  costTier: CostTier
+  config: {
+    apiKeyEnv?: string // env var name, e.g. "ANTHROPIC_API_KEY"
+    baseUrl?: string
+    defaultParams?: Record<string, unknown>
+  }
+  createdAt: number
+}
+
+// --- Skill Library ---
+
+export interface SkillConfig {
+  id: string
+  name: string
+  description: string
+  promptTemplate: string
+  requiredMcps: string[]
+  compatibleModels: string[] // ['*'] = all
+  inputSchema?: Record<string, unknown>
+  createdAt: number
+}
+
+// --- MCP Library ---
+
+export type McpTransport = 'stdio' | 'sse' | 'streamable-http' | 'builtin'
+
+export interface McpConfig {
+  id: string
+  name: string
+  description: string
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  createdAt: number
+}
+
+// --- Agent ---
+
+export type AgentState = 'active' | 'idle' | 'pending_destroy' | 'destroyed'
+
+export interface AgentConfig {
+  id: string
+  name: string
+  description: string
+  modelId: string
+  skillIds: string[]
+  mcpIds: string[]
+  systemPrompt: string
+  lifecycle: {
+    ttl: number        // ms, default 7 days
+    idleTimeout: number // ms, default 24h
+    autoRenew: boolean
+  }
+  state: AgentState
+  createdAt: number
+  lastActiveAt: number
+}
+
+// --- Task ---
+
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface Task {
+  id: string
+  agentId: string
+  prompt: string
+  status: TaskStatus
+  output?: string
+  error?: string
+  tokensUsed?: number
+  createdAt: number
+  completedAt?: number
+}
+
+// --- Trace ---
+
+export interface TraceSpan {
+  spanId: string
+  taskId: string
+  parentSpanId?: string
+  agentId: string
+  action: string
+  type?: 'llm' | 'tool' | 'chain' | 'dispatch'
+  name?: string
+  input?: string
+  output?: string
+  tokensUsed?: number
+  durationMs: number
+  timestamp: number
+  status?: 'success' | 'error'
+}
+
+// --- Bypass ---
+
+export interface BypassConfig {
+  enabled: boolean
+  rules: {
+    autoCreateMaxCostTier?: CostTier
+    autoDestroyIdleHours?: number
+    autoDispatchReadOnly?: boolean
+  }
+  neverBypass: string[]
+}
+
+// --- Store ---
+
+export interface StoreData {
+  models: ModelConfig[]
+  skills: SkillConfig[]
+  mcps: McpConfig[]
+  agents: AgentConfig[]
+  tasks: Task[]
+  traces: TraceSpan[]
+  bypass: BypassConfig
+  graphs: GraphConfig[]
+}
+
+// --- LLM Adapter ---
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatResponse {
+  content: string
+  tokensUsed: number
+}
+
+// --- Agent Graph ---
+
+export interface GraphNode {
+  id: string
+  agentId: string
+  label: string
+}
+
+export interface GraphEdge {
+  id: string
+  from: string
+  to: string
+  condition?: string   // simple keyword match on previous output
+  dataMapping?: Record<string, string>
+}
+
+export interface GraphConfig {
+  id: string
+  name: string
+  description: string
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  createdAt: number
+}
+
+export interface GraphExecutionEvent {
+  type: 'node_start' | 'node_complete' | 'node_error' | 'graph_complete'
+  nodeId?: string
+  nodeLabel?: string
+  agentId?: string
+  output?: string
+  error?: string
+  tokensUsed?: number
+}
+
+// --- Permission ---
+
+export type PermissionAction =
+  | 'agent:create'
+  | 'agent:destroy'
+  | 'agent:modify'
+  | 'model:add'
+  | 'model:remove'
+  | 'skill:add'
+  | 'skill:remove'
+  | 'mcp:add'
+  | 'mcp:remove'
+  | 'task:dispatch'
+
+// --- Constants ---
+
+export const DEFAULT_TTL = 7 * 24 * 60 * 60 * 1000       // 7 days
+export const DEFAULT_IDLE_TIMEOUT = 24 * 60 * 60 * 1000   // 24 hours

@@ -1,0 +1,22 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #334155;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --border: #475569;
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #ef4444;
+}
+
+/* React Flow dark theme overrides */
+.react-flow__edge-path { stroke: #3b82f6; }
+.react-flow__connection-line { stroke: #3b82f6; }
+.react-flow__handle { transition: box-shadow 0.15s; }
+.react-flow__handle:hover { box-shadow: 0 0 6px #3b82f6; }

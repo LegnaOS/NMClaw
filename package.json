@@ -1,0 +1,44 @@
+{
+  "name": "nmclaw",
+  "version": "0.1.0",
+  "description": "Agent orchestration platform — Genesis Agent as kernel, not God Agent",
+  "type": "module",
+  "bin": {
+    "nmclaw": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup && cd web && pnpm build",
+    "build:server": "tsup",
+    "dev": "node scripts/dev.js",
+    "start": "node dist/server.js",
+    "cli": "node dist/cli.js",
+    "test": "vitest --run",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@hono/node-server": "^1.19.11",
+    "@inquirer/prompts": "^8.3.2",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "hono": "^4.12.8",
+    "nanoid": "^5.1.7",
+    "openai": "^6.32.0",
+    "ora": "^9.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+web/dist/
+*.js.map
+.nmclaw/
+*.tgz
+.DS_Store
+Thumbs.db
+.env
+.env.local
+.augment-rag/
