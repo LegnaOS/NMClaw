@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 
-type Message = { role: 'user' | 'assistant'; content: string; timestamp: number; tokens?: number }
+type Message = { role: 'user' | 'assistant'; content: string; timestamp: number; tokens?: number; durationMs?: number }
 
 const CHAT_STORAGE_KEY = 'nmclaw_chat_messages'
 
@@ -125,19 +125,23 @@ export default function Chat() {
 
   const sendWithHistory = async (history: Message[]) => {
     setStreaming(true)
+    const startTime = Date.now()
     const assistantMsg: Message = { role: 'assistant', content: '', timestamp: Date.now() }
     setMessages([...history, assistantMsg])
 
     try {
       for await (const chunk of api.chat(history.map((m) => ({ role: m.role, content: m.content })))) {
         assistantMsg.content += chunk
-        // Extract tokens from STREAM_META if present
         const tokens = extractTokens(assistantMsg.content)
         if (tokens) assistantMsg.tokens = tokens
+        assistantMsg.durationMs = Date.now() - startTime
         setMessages([...history, { ...assistantMsg }])
       }
+      assistantMsg.durationMs = Date.now() - startTime
+      setMessages([...history, { ...assistantMsg }])
     } catch (err) {
       assistantMsg.content += `\n\n[Error: ${err instanceof Error ? err.message : err}]`
+      assistantMsg.durationMs = Date.now() - startTime
       setMessages([...history, { ...assistantMsg }])
     } finally {
       setStreaming(false)
@@ -245,7 +249,10 @@ export default function Chat() {
                 </div>
                 <div className={`flex items-center gap-2 mt-1 text-[10px] text-[#475569] ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <span>{formatTime(msg.timestamp)}</span>
-                  {msg.tokens && <span>· {msg.tokens} tokens</span>}
+                  {msg.role === 'assistant' && msg.durationMs != null && msg.durationMs > 0 && (
+                    <span>· {msg.durationMs >= 1000 ? `${(msg.durationMs / 1000).toFixed(1)}s` : `${msg.durationMs}ms`}</span>
+                  )}
+                  {msg.tokens != null && msg.tokens > 0 && <span>· {msg.tokens} tokens</span>}
                 </div>
               </div>
             )}

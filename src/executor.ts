@@ -346,6 +346,7 @@ async function* streamOpenAIWithTools(
         max_tokens: (params.max_tokens as number) ?? 4096,
         ...(params.temperature != null ? { temperature: params.temperature as number } : {}),
         stream: true,
+        stream_options: { include_usage: true },
       })
     } catch (err) {
       yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
