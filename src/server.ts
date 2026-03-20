@@ -101,23 +101,7 @@ app.delete('/api/models/:id', (c) => {
 // ═══════════════════════════════════
 app.get('/api/skills', (c) => c.json(listSkills()))
 
-app.post('/api/skills', async (c) => {
-  const body = await c.req.json()
-  const skill = addSkill({
-    name: body.name,
-    description: body.description ?? '',
-    promptTemplate: body.promptTemplate ?? '',
-    requiredMcps: body.requiredMcps,
-    compatibleModels: body.compatibleModels,
-  })
-  return c.json(skill, 201)
-})
-
-app.delete('/api/skills/:id', (c) => {
-  const ok = removeSkill(c.req.param('id'))
-  return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
-})
-
+// Upload must be registered before POST /api/skills to avoid route conflicts
 app.post('/api/skills/upload', async (c) => {
   const body = await c.req.parseBody()
   const file = body['file']
@@ -137,6 +121,23 @@ app.post('/api/skills/upload', async (c) => {
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'upload failed' }, 400)
   }
+})
+
+app.post('/api/skills', async (c) => {
+  const body = await c.req.json()
+  const skill = addSkill({
+    name: body.name,
+    description: body.description ?? '',
+    promptTemplate: body.promptTemplate ?? '',
+    requiredMcps: body.requiredMcps,
+    compatibleModels: body.compatibleModels,
+  })
+  return c.json(skill, 201)
+})
+
+app.delete('/api/skills/:id', (c) => {
+  const ok = removeSkill(c.req.param('id'))
+  return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
 })
 
 // ═══════════════════════════════════
