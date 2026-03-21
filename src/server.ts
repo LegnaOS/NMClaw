@@ -94,6 +94,7 @@ app.post('/api/models', async (c) => {
     provider: body.provider,
     capabilities: body.capabilities ?? [],
     costTier: body.costTier ?? 'medium',
+    apiKey: body.apiKey,
     apiKeyEnv: body.apiKeyEnv,
     baseUrl: body.baseUrl,
     defaultParams: body.defaultParams,

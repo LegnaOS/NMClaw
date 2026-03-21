@@ -46,8 +46,10 @@ function buildSystemPrompt(agentId: string) {
 
 function getApiKey(model: ModelConfig): string {
   if (model.provider === 'ollama') return 'ollama'
+  // 优先直接配置的 apiKey，其次环境变量
+  if (model.config.apiKey) return model.config.apiKey
   const key = model.config.apiKeyEnv ? process.env[model.config.apiKeyEnv] : undefined
-  if (!key) throw new Error(`API key not found in env: ${model.config.apiKeyEnv}`)
+  if (!key) throw new Error(`API key 未配置：请在模型设置中填写 API Key，或设置环境变量 ${model.config.apiKeyEnv ?? '(未指定)'}`)
   return key
 }
 

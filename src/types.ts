@@ -14,6 +14,7 @@ export interface ModelConfig {
   costTier: CostTier
   enabled?: boolean  // 全局启用/禁用，默认 true
   config: {
+    apiKey?: string    // 直接填写 API Key（优先级高于 apiKeyEnv）
     apiKeyEnv?: string // env var name, e.g. "ANTHROPIC_API_KEY"
     baseUrl?: string
     defaultParams?: Record<string, unknown>

@@ -4,8 +4,8 @@ import { api } from '../api'
 const PROVIDERS = ['anthropic', 'openai', 'deepseek', 'ollama', 'other']
 const COST_TIERS = ['free', 'low', 'medium', 'high']
 
-type FormData = { name: string; provider: string; capabilities: string; costTier: string; apiKeyEnv: string; baseUrl: string }
-const emptyForm: FormData = { name: '', provider: 'anthropic', capabilities: '', costTier: 'medium', apiKeyEnv: '', baseUrl: '' }
+type FormData = { name: string; provider: string; capabilities: string; costTier: string; apiKey: string; apiKeyEnv: string; baseUrl: string }
+const emptyForm: FormData = { name: '', provider: 'anthropic', capabilities: '', costTier: 'medium', apiKey: '', apiKeyEnv: '', baseUrl: '' }
 
 export default function Models() {
   const [models, setModels] = useState<any[]>([])
@@ -26,7 +26,7 @@ export default function Models() {
     setForm({
       name: m.name, provider: m.provider,
       capabilities: m.capabilities.join(', '), costTier: m.costTier,
-      apiKeyEnv: m.config?.apiKeyEnv ?? '', baseUrl: m.config?.baseUrl ?? '',
+      apiKey: m.config?.apiKey ?? '', apiKeyEnv: m.config?.apiKeyEnv ?? '', baseUrl: m.config?.baseUrl ?? '',
     })
     setShowForm(true)
   }
@@ -81,14 +81,19 @@ export default function Models() {
           </select>
         </div>
         <div>
-          <label className="block text-xs text-[#94a3b8] mb-1">API Key 环境变量</label>
-          <input value={form.apiKeyEnv} onChange={e => setForm({...form, apiKeyEnv: e.target.value})}
-            placeholder="ANTHROPIC_API_KEY" className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
-        </div>
-        <div>
           <label className="block text-xs text-[#94a3b8] mb-1">Base URL (可选)</label>
           <input value={form.baseUrl} onChange={e => setForm({...form, baseUrl: e.target.value})}
             placeholder="https://api.deepseek.com/v1" className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs text-[#94a3b8] mb-1">API Key <span className="text-[#64748b]">(直接填写，优先级高于环境变量)</span></label>
+          <input type="password" value={form.apiKey} onChange={e => setForm({...form, apiKey: e.target.value})}
+            placeholder="sk-..." className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none font-mono" />
+        </div>
+        <div>
+          <label className="block text-xs text-[#94a3b8] mb-1">API Key 环境变量 <span className="text-[#64748b]">(可选，上面没填时使用)</span></label>
+          <input value={form.apiKeyEnv} onChange={e => setForm({...form, apiKeyEnv: e.target.value})}
+            placeholder="ANTHROPIC_API_KEY" className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
         </div>
       </div>
       <button onClick={editId ? handleSave : handleAdd} disabled={!form.name}

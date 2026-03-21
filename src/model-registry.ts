@@ -7,6 +7,7 @@ export function addModel(input: {
   provider: string
   capabilities: string[]
   costTier: CostTier
+  apiKey?: string
   apiKeyEnv?: string
   baseUrl?: string
   defaultParams?: Record<string, unknown>
@@ -18,6 +19,7 @@ export function addModel(input: {
     capabilities: input.capabilities,
     costTier: input.costTier,
     config: {
+      apiKey: input.apiKey,
       apiKeyEnv: input.apiKeyEnv,
       baseUrl: input.baseUrl,
       defaultParams: input.defaultParams,
@@ -48,7 +50,7 @@ export function getModel(id: string): ModelConfig | undefined {
   return loadStore().models.find((m) => m.id === id)
 }
 
-export function modifyModel(id: string, patch: Partial<Pick<ModelConfig, 'name' | 'provider' | 'capabilities' | 'costTier' | 'enabled'>> & { apiKeyEnv?: string; baseUrl?: string; defaultParams?: Record<string, unknown> }): boolean {
+export function modifyModel(id: string, patch: Partial<Pick<ModelConfig, 'name' | 'provider' | 'capabilities' | 'costTier' | 'enabled'>> & { apiKey?: string; apiKeyEnv?: string; baseUrl?: string; defaultParams?: Record<string, unknown> }): boolean {
   let found = false
   updateStore((s) => {
     const m = s.models.find((x) => x.id === id)
@@ -58,6 +60,7 @@ export function modifyModel(id: string, patch: Partial<Pick<ModelConfig, 'name' 
       if (patch.capabilities != null) m.capabilities = patch.capabilities
       if (patch.costTier != null) m.costTier = patch.costTier
       if (typeof patch.enabled === 'boolean') m.enabled = patch.enabled
+      if (patch.apiKey !== undefined) m.config.apiKey = patch.apiKey
       if (patch.apiKeyEnv !== undefined) m.config.apiKeyEnv = patch.apiKeyEnv
       if (patch.baseUrl !== undefined) m.config.baseUrl = patch.baseUrl
       if (patch.defaultParams !== undefined) m.config.defaultParams = patch.defaultParams
