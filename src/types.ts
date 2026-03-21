@@ -238,6 +238,8 @@ export interface FeishuChannelConfig {
   requireMention?: boolean      // 群聊中是否需要 @机器人 才回复 (default false)
   groupPolicy?: 'open' | 'allowlist'  // open=所有人可用, allowlist=仅白名单用户
   allowedUsers?: string[]       // 白名单用户 open_id 列表
+  // Drive (云空间) — 大文件分片上传目标文件夹
+  driveFolderToken?: string        // 云空间文件夹 token，大文件上传到此处
   // Webhook mode: 仅发送
   webhookUrl?: string
   webhookSecret?: string

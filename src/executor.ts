@@ -262,17 +262,30 @@ async function callOpenAIWithTools(
 //  Streaming execution with tool use
 // ═══════════════════════════════════
 
-export async function* streamTask(agentId: string, messages: ChatMessage[]): AsyncGenerator<string> {
+export interface ChannelContext {
+  channelId: string
+  channelName: string
+  channelType: string
+}
+
+export async function* streamTask(agentId: string, messages: ChatMessage[], channelCtx?: ChannelContext): AsyncGenerator<string> {
   const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
   const tools = await getToolsForAgent(agent.mcpIds)
+
+  // Inject channel context into system prompt so agent knows how to send files
+  let finalSystem = systemPrompt
+  if (channelCtx) {
+    finalSystem += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
+      `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
+  }
 
   // Link Understanding: augment the last user message with fetched URL content
   const augmentedMessages = await augmentUserLinks(messages)
 
   if (model.provider === 'anthropic') {
-    yield* streamAnthropicWithTools(model, systemPrompt, augmentedMessages, tools)
+    yield* streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
   } else {
-    yield* streamOpenAIWithTools(model, systemPrompt, augmentedMessages, tools)
+    yield* streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
   }
 }
 
@@ -295,7 +308,7 @@ async function augmentUserLinks(messages: ChatMessage[]): Promise<ChatMessage[]>
 }
 
 async function* streamAnthropicWithTools(
-  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], channelCtx?: ChannelContext,
 ): AsyncGenerator<string> {
   const params = model.config.defaultParams ?? {}
   const maxTokens = (params.max_tokens as number) ?? 4096
@@ -349,7 +362,7 @@ async function* streamAnthropicWithTools(
         yield `[DISPATCH_START:${targetId}|${agentName}]`
         let workerOutput = ''
         try {
-          for await (const chunk of streamTask(targetId, [{ role: 'user' as const, content: prompt }])) {
+          for await (const chunk of streamTask(targetId, [{ role: 'user' as const, content: prompt }], channelCtx)) {
             if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
                 chunk.startsWith('[FILE_OUTPUT:')) {
               yield chunk
@@ -383,7 +396,7 @@ async function* streamAnthropicWithTools(
       }
       try {
         const callResult = await callTool(mcpId, tc.name, tc.arguments)
-        if (tc.name === 'write_file' && tc.arguments.path && !callResult.isError) {
+        if ((tc.name === 'write_file' || tc.name === 'send_file') && tc.arguments.path && !callResult.isError) {
           yield `[FILE_OUTPUT:${tc.arguments.path}]`
         }
         yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(callResult.content)}]`
@@ -409,7 +422,7 @@ async function* streamAnthropicWithTools(
 }
 
 async function* streamOpenAIWithTools(
-  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], _channelCtx?: ChannelContext,
 ): AsyncGenerator<string> {
   const client = new OpenAI({
     apiKey: getApiKey(model),
@@ -494,7 +507,7 @@ async function* streamOpenAIWithTools(
       }
       try {
         const result = await callTool(mcpId, tc.name, args)
-        if (tc.name === 'write_file' && args.path && !result.isError) {
+        if ((tc.name === 'write_file' || tc.name === 'send_file') && args.path && !result.isError) {
           yield `[FILE_OUTPUT:${args.path}]`
         }
         yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(result.content)}]`

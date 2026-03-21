@@ -71,35 +71,109 @@ async function builtinWeather(_name: string, input: Record<string, unknown>): Pr
   }
 }
 
+// ─── Delete confirmation token store (in-memory, 5 min TTL) ───
+const deleteTokens = new Map<string, { path: string; createdAt: number }>()
+const DELETE_TOKEN_TTL = 5 * 60 * 1000
+
+function generateDeleteToken(filePath: string): string {
+  // Cleanup expired tokens
+  const now = Date.now()
+  for (const [k, v] of deleteTokens) {
+    if (now - v.createdAt > DELETE_TOKEN_TTL) deleteTokens.delete(k)
+  }
+  const token = `del_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  deleteTokens.set(token, { path: filePath, createdAt: now })
+  return token
+}
+
 async function builtinFilesystem(name: string, input: Record<string, unknown>): Promise<ToolResult> {
-  const { readFileSync, readdirSync, statSync, writeFileSync } = await import('node:fs')
-  const { resolve } = await import('node:path')
+  const fs = await import('node:fs')
+  const { resolve, dirname, basename } = await import('node:path')
   try {
     if (name === 'read_file') {
       const p = resolve(input.path as string)
-      const content = readFileSync(p, 'utf-8')
+      const content = fs.readFileSync(p, 'utf-8')
       return { content: content.length > 10000 ? content.slice(0, 10000) + '\n...[truncated]' : content }
     }
     if (name === 'list_directory') {
       const p = resolve(input.path as string)
-      const entries = readdirSync(p, { withFileTypes: true })
+      const entries = fs.readdirSync(p, { withFileTypes: true })
       const list = entries.map((e) => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`)
       return { content: list.join('\n') }
     }
     if (name === 'write_file') {
       const p = resolve(input.path as string)
-      writeFileSync(p, input.content as string, 'utf-8')
+      fs.writeFileSync(p, input.content as string, 'utf-8')
       return { content: `已写入: ${p}` }
     }
     if (name === 'get_file_info') {
       const p = resolve(input.path as string)
-      const s = statSync(p)
+      const s = fs.statSync(p)
       return {
         content: JSON.stringify({
           path: p, size: s.size, isDirectory: s.isDirectory(),
           modified: s.mtime.toISOString(), created: s.birthtime.toISOString(),
         }),
       }
+    }
+    if (name === 'copy_file') {
+      const src = resolve(input.source as string)
+      const dst = resolve(input.destination as string)
+      if (!fs.existsSync(src)) return { content: `源文件不存在: ${src}`, isError: true }
+      // If destination is a directory, copy into it with same filename
+      const finalDst = fs.existsSync(dst) && fs.statSync(dst).isDirectory()
+        ? resolve(dst, basename(src))
+        : dst
+      // Ensure destination directory exists
+      fs.mkdirSync(dirname(finalDst), { recursive: true })
+      fs.copyFileSync(src, finalDst)
+      return { content: `已复制: ${src} → ${finalDst}` }
+    }
+    if (name === 'move_file') {
+      const src = resolve(input.source as string)
+      const dst = resolve(input.destination as string)
+      if (!fs.existsSync(src)) return { content: `源文件不存在: ${src}`, isError: true }
+      const finalDst = fs.existsSync(dst) && fs.statSync(dst).isDirectory()
+        ? resolve(dst, basename(src))
+        : dst
+      fs.mkdirSync(dirname(finalDst), { recursive: true })
+      fs.renameSync(src, finalDst)
+      return { content: `已移动: ${src} → ${finalDst}` }
+    }
+    if (name === 'send_file') {
+      const p = resolve(input.path as string)
+      if (!fs.existsSync(p)) return { content: `文件不存在: ${p}`, isError: true }
+      const stat = fs.statSync(p)
+      if (!stat.isFile()) return { content: `不是文件: ${p}`, isError: true }
+      return { content: `文件已就绪: ${p} (${(stat.size / 1024).toFixed(1)} KB)` }
+    }
+    if (name === 'delete_file') {
+      const p = resolve(input.path as string)
+      const confirmToken = input.confirmToken as string | undefined
+      if (!fs.existsSync(p)) return { content: `文件不存在: ${p}`, isError: true }
+      const stat = fs.statSync(p)
+      const desc = stat.isDirectory() ? `目录（含所有内容）` : `文件 (${(stat.size / 1024).toFixed(1)} KB)`
+
+      if (!confirmToken) {
+        // Phase 1: generate token, return warning
+        const token = generateDeleteToken(p)
+        return {
+          content: `⚠️ 删除确认请求\n\n即将删除: ${p}\n类型: ${desc}\n\n⚠️ 此操作不可撤销！请先向用户确认是否要删除此${stat.isDirectory() ? '目录' : '文件'}。\n\n用户确认后，请再次调用 delete_file 并传入 confirmToken: "${token}"`,
+        }
+      }
+
+      // Phase 2: validate token and delete
+      const stored = deleteTokens.get(confirmToken)
+      if (!stored || stored.path !== p) {
+        return { content: `确认令牌无效或已过期，请重新发起删除请求`, isError: true }
+      }
+      deleteTokens.delete(confirmToken)
+      if (stat.isDirectory()) {
+        fs.rmSync(p, { recursive: true, force: true })
+      } else {
+        fs.unlinkSync(p)
+      }
+      return { content: `已删除: ${p}` }
     }
     return { content: `未知文件操作: ${name}`, isError: true }
   } catch (e) {
@@ -219,6 +293,19 @@ async function builtinPlatform(name: string, input: Record<string, unknown>): Pr
         compatibleModels: ['*'],
       })
       return { content: `技能导入成功:\n${JSON.stringify({ id: skill.id, name: skill.name, description: skill.description }, null, 2)}` }
+    }
+    if (name === 'list_channels') {
+      const { listChannels } = await import('./channels/feishu.js')
+      const channels = listChannels().map(c => ({ id: c.id, name: c.name, type: c.type, agentId: c.agentId }))
+      return { content: JSON.stringify(channels, null, 2) }
+    }
+    if (name === 'send_file_to_channel') {
+      const channelId = input.channelId as string
+      const filePath = input.filePath as string
+      if (!channelId || !filePath) return { content: '缺少 channelId 或 filePath', isError: true }
+      const { sendFileToChannel } = await import('./channels/feishu.js')
+      const result = await sendFileToChannel(channelId, filePath)
+      return { content: result }
     }
     return { content: `未知平台操作: ${name}`, isError: true }
   } catch (e) {
@@ -535,6 +622,53 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           required: ['path'],
         },
       },
+      {
+        name: 'copy_file',
+        description: '复制文件到指定位置。如果目标是目录，则复制到该目录下保留原文件名',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            source: { type: 'string', description: '源文件绝对路径' },
+            destination: { type: 'string', description: '目标路径（文件路径或目录路径）' },
+          },
+          required: ['source', 'destination'],
+        },
+      },
+      {
+        name: 'move_file',
+        description: '移动/重命名文件。如果目标是目录，则移动到该目录下保留原文件名',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            source: { type: 'string', description: '源文件绝对路径' },
+            destination: { type: 'string', description: '目标路径（文件路径或目录路径）' },
+          },
+          required: ['source', 'destination'],
+        },
+      },
+      {
+        name: 'send_file',
+        description: '将本地文件发送给当前 Web 对话中的用户。用户说"把文件发给我"、"发送文件"时调用此工具，文件会以下载链接的形式出现在聊天界面',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '要发送的文件的绝对路径' },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'delete_file',
+        description: '删除文件或目录（危险操作，需要两步确认）。第一次调用只传 path，会返回确认令牌和警告信息，你必须先向用户确认。用户同意后，第二次调用传入 path + confirmToken 才会真正删除。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: '要删除的文件或目录的绝对路径' },
+            confirmToken: { type: 'string', description: '确认令牌（第二次调用时传入，由第一次调用返回）' },
+          },
+          required: ['path'],
+        },
+      },
     ],
     call: builtinFilesystem,
   },
@@ -666,6 +800,23 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           type: 'object',
           properties: { url: { type: 'string', description: '技能文件的 URL（如 https://evomap.ai/skill.md）' } },
           required: ['url'],
+        },
+      },
+      {
+        name: 'list_channels',
+        description: '列出所有消息渠道（飞书等），用于查看可发送文件的目标渠道',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'send_file_to_channel',
+        description: '将本地文件发送到指定消息渠道（飞书）。用户说"把文件发给我"时，先用 list_channels 获取渠道列表，再调用此工具发送文件',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            channelId: { type: 'string', description: '目标渠道 ID（先用 list_channels 查看）' },
+            filePath: { type: 'string', description: '要发送的本地文件绝对路径' },
+          },
+          required: ['channelId', 'filePath'],
         },
       },
     ],

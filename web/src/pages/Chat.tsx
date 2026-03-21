@@ -151,8 +151,16 @@ function ToolBlock({ name, result, fileOutput }: { name: string; result?: string
       {fileOutput && (
         <div className={`px-3 py-1.5 ${open || !result ? 'border-t' : ''} border-[#22c55e]/20 flex items-center gap-2 text-xs`}>
           <span className="text-[#22c55e]">📄</span>
-          <span className="text-[#22c55e]">文件已保存</span>
-          <span className="text-[#f1f5f9] font-mono">{fileOutput}</span>
+          <a
+            href={`/api/files/download?path=${encodeURIComponent(fileOutput)}`}
+            download
+            className="text-[#22c55e] hover:text-[#4ade80] underline underline-offset-2 cursor-pointer transition-colors"
+          >
+            ⬇ 下载文件
+          </a>
+          <span className="text-[#94a3b8] font-mono truncate max-w-[300px]" title={fileOutput}>
+            {fileOutput.split('/').pop()}
+          </span>
         </div>
       )}
     </div>
@@ -331,8 +339,10 @@ export default function Chat() {
     })),
   ]
 
-  // Poll channel conversations
+  // Poll channel conversations (graceful: stops polling if backend is unreachable)
+  const channelAvailable = useRef(true)
   const fetchChannelData = useCallback(async () => {
+    if (!channelAvailable.current) return
     try {
       const [convs, msgs] = await Promise.all([
         api.getChannelConversations(),
@@ -340,7 +350,12 @@ export default function Chat() {
       ])
       setChannelConvs(convs)
       setChannelMessages(msgs)
-    } catch { /* ignore */ }
+      channelAvailable.current = true
+    } catch {
+      // Backend unreachable — stop polling to avoid 502 spam
+      channelAvailable.current = false
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    }
   }, [])
 
   useEffect(() => {

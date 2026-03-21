@@ -11,6 +11,10 @@ import type { ChannelConfig, FeishuChannelConfig, ChatMessage, PairingRecord } f
 const clientCache = new Map<string, Lark.Client>()
 const wsClients = new Map<string, Lark.WSClient>()
 const monitorAborts = new Map<string, AbortController>()
+// 记录每个渠道最后一次通信的 chat_id，用于主动发送
+const lastChatIds = new Map<string, string>()
+// 记录每个渠道最后一次通信的发送者 open_id，用于授权云空间文件
+const lastSenderIds = new Map<string, string>()
 
 function resolveDomain(domain?: string): Lark.Domain | string {
   if (domain === 'lark') return Lark.Domain.Lark
@@ -437,6 +441,10 @@ async function processMessage(
   const convId = `${channel.id}:${senderId}`
   const msgBase = { conversationId: convId, channelId: channel.id, channelName: channel.name, channelType: channel.type, senderId }
 
+  // 记住最后一个 chat_id 和 sender_id，用于主动发送和云空间授权
+  if (chatId) lastChatIds.set(channel.id, chatId)
+  if (senderId) lastSenderIds.set(channel.id, senderId)
+
   // Record user message
   recordChannelMessage({ ...msgBase, role: 'user', content: userText, timestamp: Date.now() })
 
@@ -455,7 +463,8 @@ async function processMessage(
     try {
       await card.start(chatId, messageId)
       let fullText = ''
-      for await (const chunk of streamTask(channel.agentId, messages)) {
+      const channelCtx = { channelId: channel.id, channelName: channel.name, channelType: channel.type }
+      for await (const chunk of streamTask(channel.agentId, messages, channelCtx)) {
         if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
             chunk.startsWith('[STREAM_META:') || chunk.startsWith('[FILE_OUTPUT:') ||
             chunk.startsWith('[AGENT_INFO:')) continue
@@ -477,7 +486,8 @@ async function processMessage(
     // Fallback: collect full response then reply as text
     let fullResponse = ''
     try {
-      for await (const chunk of streamTask(channel.agentId, messages)) {
+      const channelCtxFallback = { channelId: channel.id, channelName: channel.name, channelType: channel.type }
+      for await (const chunk of streamTask(channel.agentId, messages, channelCtxFallback)) {
         if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
             chunk.startsWith('[STREAM_META:') || chunk.startsWith('[FILE_OUTPUT:') ||
             chunk.startsWith('[AGENT_INFO:')) continue
@@ -828,4 +838,212 @@ export async function sendToChannel(channelId: string, text: string): Promise<vo
 /** Get monitor status for a channel */
 export function getFeishuMonitorStatus(channelId: string): 'running' | 'stopped' {
   return wsClients.has(channelId) ? 'running' : 'stopped'
+}
+
+
+// ═══════════════════════════════════
+//  Send file to channel
+// ═══════════════════════════════════
+
+export async function sendFileToChannel(channelId: string, filePath: string): Promise<string> {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+
+  const channel = getChannel(channelId)
+  if (!channel) throw new Error(`渠道 ${channelId} 不存在`)
+
+  const cfg = channel.config as FeishuChannelConfig
+  if (!cfg.appId || !cfg.appSecret) throw new Error('飞书 appId/appSecret 未配置，无法发送文件')
+
+  const chatId = lastChatIds.get(channelId)
+  if (!chatId) throw new Error('该渠道尚无对话记录，无法确定发送目标。请先在飞书中与机器人对话后再尝试发送文件。')
+
+  const absPath = path.resolve(filePath)
+  if (!fs.existsSync(absPath)) throw new Error(`文件不存在: ${absPath}`)
+  const stat = fs.statSync(absPath)
+  if (stat.isDirectory()) throw new Error('不支持发送目录，请指定文件路径')
+
+  const fileName = path.basename(absPath)
+  const fileSizeMB = (stat.size / 1024 / 1024).toFixed(1)
+  const IM_FILE_LIMIT = 30 * 1024 * 1024 // 飞书 im.file.create 限制 30MB
+
+  const senderId = lastSenderIds.get(channelId)
+
+  if (stat.size <= IM_FILE_LIMIT) {
+    // ── 小文件：IM 直传 ──
+    return await sendFileViaIM(cfg, channel, chatId, absPath, fileName, fileSizeMB)
+  } else {
+    // ── 大文件：云空间分片上传 → 授权 → 发消息通知 ──
+    return await sendFileViaDrive(cfg, channel, chatId, absPath, fileName, fileSizeMB, stat.size, senderId)
+  }
+}
+
+/** ≤30MB: 通过 IM 文件接口直接发送 */
+async function sendFileViaIM(
+  cfg: FeishuChannelConfig, channel: ChannelConfig, chatId: string,
+  absPath: string, fileName: string, fileSizeMB: string,
+): Promise<string> {
+  const fs = await import('node:fs')
+  const client = getClient(cfg)
+  console.log(`[feishu] IM 直传: ${fileName} (${fileSizeMB}MB) → ${channel.name}`)
+
+  const fileStream = fs.createReadStream(absPath)
+  const uploadRes = await client.im.file.create({
+    data: { file_type: 'stream', file_name: fileName, file: fileStream },
+  }) as any
+
+  if (uploadRes.code !== 0 || !uploadRes.data?.file_key) {
+    throw new Error(`文件上传失败: ${uploadRes.msg || '未知错误'}`)
+  }
+
+  const sendRes = await client.im.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: {
+      receive_id: chatId,
+      msg_type: 'file',
+      content: JSON.stringify({ file_key: uploadRes.data.file_key }),
+    },
+  }) as any
+
+  if (sendRes.code !== 0) {
+    throw new Error(`文件消息发送失败: ${sendRes.msg || '未知错误'}`)
+  }
+  return `文件 "${fileName}" (${fileSizeMB}MB) 已通过渠道 "${channel.name}" 发送成功`
+}
+
+/** >30MB: 分片上传到云空间，授权给用户，然后发消息通知 */
+async function sendFileViaDrive(
+  cfg: FeishuChannelConfig, _channel: ChannelConfig, chatId: string,
+  absPath: string, fileName: string, fileSizeMB: string, fileSize: number,
+  senderId?: string,
+): Promise<string> {
+  const fs = await import('node:fs')
+
+  const apiBase = resolveApiBase(cfg.domain)
+  const token = await getTenantToken(cfg)
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' }
+
+  // 自动获取云空间根文件夹 token（如果未手动配置）
+  let folderToken = cfg.driveFolderToken
+  if (!folderToken) {
+    console.log(`[feishu] driveFolderToken 未配置，自动获取根文件夹...`)
+    const rootRes = await fetch(`${apiBase}/drive/explorer/v2/root_folder/meta`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const rootData = await rootRes.json() as any
+    if (rootData.code !== 0 || !rootData.data?.token) {
+      throw new Error(
+        `无法获取云空间根文件夹: code=${rootData.code}, msg=${rootData.msg}。` +
+        `请确保应用已开启 drive:drive 权限，或在渠道配置中手动填写 driveFolderToken。`,
+      )
+    }
+    folderToken = rootData.data.token as string
+    console.log(`[feishu] 根文件夹 token: ${folderToken}`)
+  }
+
+  console.log(`[feishu] 大文件分片上传: ${fileName} (${fileSizeMB}MB) → 云空间 ${folderToken}`)
+
+  // Step 1: 预上传 — 获取 upload_id 和分片策略
+  const prepRes = await fetch(`${apiBase}/drive/v1/files/upload_prepare`, {
+    method: 'POST', headers,
+    body: JSON.stringify({
+      file_name: fileName,
+      parent_type: 'explorer',
+      parent_node: folderToken,
+      size: fileSize,
+    }),
+  })
+  const prepData = await prepRes.json() as any
+  if (prepData.code !== 0) {
+    throw new Error(`分片预上传失败: code=${prepData.code}, msg=${prepData.msg}`)
+  }
+  const { upload_id, block_size, block_num } = prepData.data
+  console.log(`[feishu] 预上传成功: upload_id=${upload_id}, block_size=${block_size}, block_num=${block_num}`)
+
+  // Step 2: 逐片上传
+  const fd = fs.openSync(absPath, 'r')
+  try {
+    for (let seq = 0; seq < block_num; seq++) {
+      const offset = seq * block_size
+      const chunkSize = Math.min(block_size, fileSize - offset)
+      const buf = Buffer.alloc(chunkSize)
+      fs.readSync(fd, buf, 0, chunkSize, offset)
+
+      const formData = new FormData()
+      formData.append('upload_id', upload_id)
+      formData.append('seq', String(seq))
+      formData.append('size', String(chunkSize))
+      formData.append('file', new Blob([buf]), fileName)
+
+      console.log(`[feishu] 上传分片 ${seq + 1}/${block_num} (${(chunkSize / 1024 / 1024).toFixed(1)}MB)`)
+
+      const partRes = await fetch(`${apiBase}/drive/v1/files/upload_part`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      })
+      const partData = await partRes.json() as any
+      if (partData.code !== 0) {
+        throw new Error(`分片 ${seq} 上传失败: code=${partData.code}, msg=${partData.msg}`)
+      }
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+
+  // Step 3: 完成上传
+  const finishRes = await fetch(`${apiBase}/drive/v1/files/upload_finish`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ upload_id, block_num }),
+  })
+  const finishData = await finishRes.json() as any
+  if (finishData.code !== 0) {
+    throw new Error(`分片上传完成失败: code=${finishData.code}, msg=${finishData.msg}`)
+  }
+  const fileToken = finishData.data?.file_token
+  console.log(`[feishu] 云空间上传完成: file_token=${fileToken}`)
+
+  // Step 4: 授权给发送者（open_id）— 否则用户无法访问应用上传的文件
+  if (senderId && fileToken) {
+    try {
+      const permRes = await fetch(`${apiBase}/drive/v1/permissions/${fileToken}/members?type=file`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          member_type: 'openid',
+          member_id: senderId,
+          perm: 'view',
+        }),
+      })
+      const permData = await permRes.json() as any
+      if (permData.code === 0) {
+        console.log(`[feishu] 已授权用户 ${senderId} 查看文件 ${fileToken}`)
+      } else {
+        console.warn(`[feishu] 授权失败: code=${permData.code}, msg=${permData.msg}`)
+      }
+    } catch (e) {
+      console.warn(`[feishu] 授权请求异常:`, e)
+    }
+  } else if (!senderId) {
+    console.warn(`[feishu] 无法授权: 未记录发送者 open_id，用户可能无法访问文件`)
+  }
+
+  // 发送消息通知用户，包含云空间文件直链
+  const domain = cfg.domain === 'lark' ? 'https://larksuite.com' : 'https://feishu.cn'
+  const fileUrl = fileToken
+    ? `${domain}/file/${fileToken}`
+    : `${domain}/drive/folder/${folderToken}`
+  const client = getClient(cfg)
+  await client.im.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: {
+      receive_id: chatId,
+      msg_type: 'text',
+      content: JSON.stringify({
+        text: `📁 大文件已上传到云空间\n\n文件名: ${fileName}\n大小: ${fileSizeMB}MB\n\n点击查看和下载:\n${fileUrl}`,
+      }),
+    },
+  }).catch((e) => console.error(`[feishu] 通知消息发送失败:`, e))
+
+  return `大文件 "${fileName}" (${fileSizeMB}MB) 已上传到飞书云空间并已授权用户访问 (file_token: ${fileToken})`
 }

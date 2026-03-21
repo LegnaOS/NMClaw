@@ -643,6 +643,29 @@ app.get('/api/channel-messages/stream', (c) => {
 })
 
 // ═══════════════════════════════════
+//  File download (for web chat file delivery)
+// ═══════════════════════════════════
+app.get('/api/files/download', async (c) => {
+  const filePath = c.req.query('path')
+  if (!filePath) return c.json({ error: 'path required' }, 400)
+
+  const { resolve, basename } = await import('node:path')
+  const fs = await import('node:fs')
+  const resolved = resolve(filePath)
+
+  if (!fs.existsSync(resolved)) return c.json({ error: 'file not found' }, 404)
+  const stat = fs.statSync(resolved)
+  if (!stat.isFile()) return c.json({ error: 'not a file' }, 400)
+
+  const data = fs.readFileSync(resolved)
+  const name = basename(resolved)
+  c.header('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`)
+  c.header('Content-Type', 'application/octet-stream')
+  c.header('Content-Length', String(stat.size))
+  return c.body(data)
+})
+
+// ═══════════════════════════════════
 //  Serve static frontend
 // ═══════════════════════════════════
 const __dirname = dirname(fileURLToPath(import.meta.url))
