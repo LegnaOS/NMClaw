@@ -28,18 +28,18 @@ import { addSkill, removeSkill, listSkills, getSkill, modifySkill } from './skil
 import { addMcp, removeMcp, listMcps, getMcp, modifyMcp } from './mcp-registry.js'
 import {
   createAgent, destroyAgent, listAgents, getAgent,
-  sweepLifecycle, modifyAgent, touchAgent,
+  sweepLifecycle, modifyAgent, touchAgent, isProtectedAgent,
 } from './agent-manager.js'
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
 import { streamTask } from './executor.js'
 import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
-import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './clawhub.js'
+import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './ext/clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
 import { loadStore, updateStore } from './store.js'
 import { seedDefaults, migrateBuiltins } from './seed.js'
 import { warmupStdioMcps } from './mcp-runtime.js'
-import { startHeartbeatLoop } from './evomap.js'
+import { startHeartbeatLoop } from './ext/evomap.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
 import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
@@ -299,6 +299,9 @@ app.patch('/api/agents/:id', async (c) => {
 })
 
 app.delete('/api/agents/:id', (c) => {
+  const agent = getAgent(c.req.param('id'))
+  if (!agent) return c.json({ error: 'not found' }, 404)
+  if (isProtectedAgent(agent)) return c.json({ error: '受保护的核心 Agent，不能销毁' }, 403)
   const ok = destroyAgent(c.req.param('id'))
   return ok ? c.json({ ok: true }) : c.json({ error: 'not found' }, 404)
 })

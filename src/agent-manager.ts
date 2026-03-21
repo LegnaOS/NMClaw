@@ -5,6 +5,14 @@ import type { AgentConfig, AgentState } from './types.js'
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000
 const ONE_DAY = 24 * 60 * 60 * 1000
 
+// 受保护的核心 Agent — 不能销毁、不能禁用
+const PROTECTED_AGENT_IDS = new Set(['genesis'])
+const PROTECTED_AGENT_NAMES = new Set(['创世 Agent', '时间助手'])
+
+export function isProtectedAgent(agent: { id: string; name: string }): boolean {
+  return PROTECTED_AGENT_IDS.has(agent.id) || PROTECTED_AGENT_NAMES.has(agent.name)
+}
+
 export function createAgent(input: {
   name: string
   description: string
@@ -39,11 +47,14 @@ export function createAgent(input: {
 }
 
 export function destroyAgent(id: string): boolean {
+  const agent = loadStore().agents.find((a) => a.id === id)
+  if (!agent) return false
+  if (isProtectedAgent(agent)) return false // 受保护，拒绝销毁
   let found = false
   updateStore((s) => {
-    const agent = s.agents.find((a) => a.id === id)
-    if (agent && agent.state !== 'destroyed') {
-      agent.state = 'destroyed'
+    const a = s.agents.find((x) => x.id === id)
+    if (a && a.state !== 'destroyed') {
+      a.state = 'destroyed'
       found = true
     }
   })
@@ -76,11 +87,16 @@ export function updateAgentState(id: string, state: AgentState): void {
   })
 }
 
-export function modifyAgent(id: string, patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'modelId' | 'skillIds' | 'mcpIds' | 'systemPrompt' | 'state'>> & { lifecycle?: Partial<AgentConfig['lifecycle']> }): boolean {
+export function modifyAgent(id: string, patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'modelId' | 'skillIds' | 'mcpIds' | 'systemPrompt' | 'state' | 'enabled'>> & { lifecycle?: Partial<AgentConfig['lifecycle']> }): boolean {
   let found = false
   updateStore((s) => {
     const agent = s.agents.find((a) => a.id === id)
     if (agent) {
+      // 受保护 Agent：禁止禁用和状态变更
+      if (isProtectedAgent(agent)) {
+        if (patch.enabled === false) delete patch.enabled
+        if (patch.state && patch.state !== 'active') delete patch.state
+      }
       const { lifecycle: lcPatch, ...rest } = patch
       Object.assign(agent, rest)
       if (lcPatch) Object.assign(agent.lifecycle, lcPatch)
@@ -103,6 +119,7 @@ export function sweepLifecycle(): { expired: AgentConfig[]; idled: AgentConfig[]
   updateStore((s) => {
     for (const agent of s.agents) {
       if (agent.state === 'destroyed') continue
+      if (isProtectedAgent(agent)) continue // 受保护 Agent 不参与生命周期淘汰
 
       // TTL expiry — hard limit
       if (now - agent.createdAt >= agent.lifecycle.ttl) {

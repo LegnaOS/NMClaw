@@ -79,6 +79,11 @@ export default function Mcps() {
     load()
   }
 
+  const toggleEnabled = async (m: any) => {
+    await api.modifyMcp(m.id, { enabled: m.enabled === false ? true : false })
+    load()
+  }
+
   const handleJsonImport = async () => {
     setJsonError('')
     try {
@@ -262,16 +267,26 @@ export default function Mcps() {
           <p className="text-xs text-[#94a3b8] mb-2 uppercase tracking-wider">内置工具</p>
           <div className="bg-[#1e293b] rounded-lg border border-[#334155]">
             <div className="divide-y divide-[#334155]/50">
-              {builtinMcps.map((m) => (
-                <div key={m.id} className="p-3 flex items-center justify-between">
+              {builtinMcps.map((m) => {
+                const isDisabled = m.enabled === false
+                return (
+                <div key={m.id} className={`p-3 flex items-center justify-between ${isDisabled ? 'opacity-50' : ''}`}>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm">{m.name}</span>
+                    <span className={`text-sm ${isDisabled ? 'line-through' : ''}`}>{m.name}</span>
                     <span className={`px-1.5 py-0.5 rounded text-xs ${TRANSPORT_COLORS.builtin}`}>builtin</span>
                     <span className="text-xs text-[#64748b]">{m.description}</span>
+                    {isDisabled && <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">已禁用</span>}
                   </div>
-                  <span className="text-xs text-[#64748b] font-mono">{m.id}</span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => toggleEnabled(m)} title={isDisabled ? '启用' : '禁用'}
+                      className={`w-8 h-4 rounded-full relative transition-colors ${isDisabled ? 'bg-[#475569]' : 'bg-[#22c55e]'}`}>
+                      <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isDisabled ? 'left-0.5' : 'left-[18px]'}`} />
+                    </button>
+                    <span className="text-xs text-[#64748b] font-mono">{m.id}</span>
+                  </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </div>
@@ -296,10 +311,15 @@ export default function Mcps() {
                 </tr>
               </thead>
               <tbody>
-                {externalMcps.map(m => (
-                  <tr key={m.id} className="border-b border-[#334155]/50 hover:bg-[#334155]/30">
+                {externalMcps.map(m => {
+                  const isDisabled = m.enabled === false
+                  return (
+                  <tr key={m.id} className={`border-b border-[#334155]/50 hover:bg-[#334155]/30 ${isDisabled ? 'opacity-50' : ''}`}>
                     <td className="p-3 font-mono text-xs text-[#64748b]">{m.id}</td>
-                    <td className="p-3">{m.name}</td>
+                    <td className="p-3">
+                      <span className={isDisabled ? 'line-through' : ''}>{m.name}</span>
+                      {isDisabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">已禁用</span>}
+                    </td>
                     <td className="p-3">
                       <span className={`px-1.5 py-0.5 rounded text-xs ${TRANSPORT_COLORS[m.transport] || 'bg-[#334155]'}`}>
                         {m.transport}
@@ -309,12 +329,19 @@ export default function Mcps() {
                       {m.command} {m.args?.join(' ')}
                     </td>
                     <td className="p-3 text-xs text-[#94a3b8]">{m.description}</td>
-                    <td className="p-3 text-right space-x-2">
-                      <button onClick={() => startEdit(m)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
-                      <button onClick={() => handleRemove(m.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                    <td className="p-3 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => toggleEnabled(m)} title={isDisabled ? '启用' : '禁用'}
+                          className={`w-8 h-4 rounded-full relative transition-colors ${isDisabled ? 'bg-[#475569]' : 'bg-[#22c55e]'}`}>
+                          <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isDisabled ? 'left-0.5' : 'left-[18px]'}`} />
+                        </button>
+                        <button onClick={() => startEdit(m)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
+                        <button onClick={() => handleRemove(m.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                      </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           )}

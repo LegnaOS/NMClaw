@@ -74,17 +74,30 @@ async function fetchAllSkills(): Promise<SkillEntry[]> {
     return skillsCache.data
   }
 
-  const result = await convexQuery<ListResponse>('skills:listPublicPageV4', {
-    dir: 'desc',
-    highlightedOnly: false,
-    nonSuspiciousOnly: false,
-    numItems: 50,
-    sort: 'downloads',
-  })
+  const all: SkillEntry[] = []
+  let cursor: string | undefined
+  const PAGE_SIZE = 100
 
-  const entries = result.page ?? []
-  skillsCache = { data: entries, ts: Date.now() }
-  return entries
+  for (;;) {
+    const args: Record<string, unknown> = {
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+      numItems: PAGE_SIZE,
+      sort: 'downloads',
+    }
+    if (cursor) args.cursor = cursor
+
+    const result = await convexQuery<ListResponse>('skills:listPublicPageV4', args)
+    const page = result.page ?? []
+    all.push(...page)
+
+    if (!result.hasMore || !result.nextCursor || page.length === 0) break
+    cursor = result.nextCursor
+  }
+
+  skillsCache = { data: all, ts: Date.now() }
+  return all
 }
 
 /** Search skills — fetches from Convex and filters locally */

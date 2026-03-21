@@ -45,7 +45,7 @@ export function removeMcp(id: string): boolean {
   return found
 }
 
-export function modifyMcp(id: string, patch: Partial<Pick<McpConfig, 'name' | 'description' | 'transport' | 'command' | 'args' | 'url' | 'env'>>): boolean {
+export function modifyMcp(id: string, patch: Partial<Pick<McpConfig, 'name' | 'description' | 'transport' | 'command' | 'args' | 'url' | 'env' | 'enabled'>>): boolean {
   let found = false
   updateStore((s) => {
     const m = s.mcps.find((x) => x.id === id)

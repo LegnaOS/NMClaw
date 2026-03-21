@@ -209,6 +209,7 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'platform_builtin', name: 'platform', description: '平台管理工具：创建/修改/销毁 Agent，查看模型/技能/MCP，管理定时任务' },
   { id: 'web_builtin', name: 'web', description: '互联网搜索与网页抓取：web_search（DuckDuckGo 搜索）、fetch_url（轻量抓取）、scrape_page（增强型智能抓取）' },
   { id: 'evomap_builtin', name: 'evomap', description: 'EvoMap 协作进化网络：evomap_register（注册节点并获取绑定链接）、evomap_status（查看节点状态和积分）' },
+  { id: 'njggzy_builtin', name: 'njggzy', description: '南京公共资源交易信息：抓取招标/中标公告、解析详情、关键词查询、招标-中标关联匹配' },
 ]
 
 /**

@@ -42,6 +42,11 @@ export default function Models() {
     await api.removeModel(id); load()
   }
 
+  const toggleEnabled = async (m: any) => {
+    await api.modifyModel(m.id, { enabled: m.enabled === false ? true : false })
+    load()
+  }
+
   const cancelForm = () => { setShowForm(false); setEditId(null); setForm({ ...emptyForm }) }
 
   const renderForm = () => (
@@ -120,9 +125,15 @@ export default function Models() {
               </tr>
             </thead>
             <tbody>
-              {models.map(m => (
-                <tr key={m.id} className="border-b border-[#334155]/50 hover:bg-[#334155]/30">
-                  <td className="p-3">{m.name} <span className="text-[10px] text-[#64748b] font-mono ml-1">{m.id}</span></td>
+              {models.map(m => {
+                const isDisabled = m.enabled === false
+                return (
+                <tr key={m.id} className={`border-b border-[#334155]/50 hover:bg-[#334155]/30 ${isDisabled ? 'opacity-50' : ''}`}>
+                  <td className="p-3">
+                    <span className={isDisabled ? 'line-through' : ''}>{m.name}</span>
+                    <span className="text-[10px] text-[#64748b] font-mono ml-1">{m.id}</span>
+                    {isDisabled && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">已禁用</span>}
+                  </td>
                   <td className="p-3"><span className="px-1.5 py-0.5 bg-[#334155] rounded text-xs">{m.provider}</span></td>
                   <td className="p-3 text-xs text-[#94a3b8]">{m.capabilities.join(', ')}</td>
                   <td className="p-3">
@@ -133,12 +144,19 @@ export default function Models() {
                       'bg-gray-500/20 text-gray-400'
                     }`}>{m.costTier}</span>
                   </td>
-                  <td className="p-3 text-right space-x-2">
-                    <button onClick={() => startEdit(m)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
-                    <button onClick={() => handleRemove(m.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                  <td className="p-3 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => toggleEnabled(m)} title={isDisabled ? '启用' : '禁用'}
+                        className={`w-8 h-4 rounded-full relative transition-colors ${isDisabled ? 'bg-[#475569]' : 'bg-[#22c55e]'}`}>
+                        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isDisabled ? 'left-0.5' : 'left-[18px]'}`} />
+                      </button>
+                      <button onClick={() => startEdit(m)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
+                      <button onClick={() => handleRemove(m.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
+                    </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         )}

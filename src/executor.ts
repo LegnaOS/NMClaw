@@ -3,6 +3,7 @@ import { getModel } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
 import { getAgent, touchAgent } from './agent-manager.js'
 import { getAllTools, getToolsForAgent, callTool, findToolMcp } from './mcp-runtime.js'
+import { augmentMessageWithLinks } from './link-understanding.js'
 import type { ChatMessage, ChatResponse, ModelConfig } from './types.js'
 import type { ToolDef } from './mcp-runtime.js'
 
@@ -263,10 +264,31 @@ export async function* streamTask(agentId: string, messages: ChatMessage[]): Asy
   const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
   const tools = await getToolsForAgent(agent.mcpIds)
 
+  // Link Understanding: augment the last user message with fetched URL content
+  const augmentedMessages = await augmentUserLinks(messages)
+
   if (model.provider === 'anthropic') {
-    yield* streamAnthropicWithTools(model, systemPrompt, messages, tools)
+    yield* streamAnthropicWithTools(model, systemPrompt, augmentedMessages, tools)
   } else {
-    yield* streamOpenAIWithTools(model, systemPrompt, messages, tools)
+    yield* streamOpenAIWithTools(model, systemPrompt, augmentedMessages, tools)
+  }
+}
+
+/** Augment the last user message with content from any detected URLs */
+async function augmentUserLinks(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  if (messages.length === 0) return messages
+  const lastIdx = messages.length - 1
+  const last = messages[lastIdx]
+  if (last.role !== 'user' || !last.content) return messages
+
+  try {
+    const { augmented } = await augmentMessageWithLinks(last.content)
+    if (augmented === last.content) return messages
+    const copy = [...messages]
+    copy[lastIdx] = { ...last, content: augmented }
+    return copy
+  } catch {
+    return messages // fail-open: don't block on link fetch errors
   }
 }
 

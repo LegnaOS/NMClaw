@@ -41,6 +41,7 @@ export default function Agents() {
   const [selected, setSelected] = useState<any>(null)
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<FormData>({ ...emptyForm })
+  const [tab, setTab] = useState<'active' | 'destroyed'>('active')
 
   const load = () => {
     Promise.all([api.listAgents(true), api.listModels(), api.listSkills(), api.listMcps()])
@@ -105,10 +106,19 @@ export default function Agents() {
     load()
   }
 
+  const toggleEnabled = async (agent: any) => {
+    const newEnabled = agent.enabled === false ? true : false
+    await api.modifyAgent(agent.id, { enabled: newEnabled })
+    load()
+  }
+
   const toggleArray = (arr: string[], val: string) =>
     arr.includes(val) ? arr.filter(v => v !== val) : [...arr, val]
 
   const now = Date.now()
+  const activeAgents = agents.filter(a => a.state !== 'destroyed')
+  const destroyedAgents = agents.filter(a => a.state === 'destroyed')
+  const displayAgents = tab === 'active' ? activeAgents : destroyedAgents
 
   // Shared form fields component
   const renderFormFields = () => (
@@ -200,31 +210,54 @@ export default function Agents() {
         </div>
       )}
 
+      {/* Tabs */}
+      <div className="flex gap-1 bg-[#1e293b] rounded-lg p-1 border border-[#334155] w-fit">
+        <button onClick={() => { setTab('active'); setSelected(null); setEditing(false) }}
+          className={`px-4 py-1.5 rounded-md text-sm transition-colors ${tab === 'active' ? 'bg-[#3b82f6] text-white' : 'text-[#94a3b8] hover:text-white'}`}>
+          活跃 ({activeAgents.length})
+        </button>
+        <button onClick={() => { setTab('destroyed'); setSelected(null); setEditing(false) }}
+          className={`px-4 py-1.5 rounded-md text-sm transition-colors ${tab === 'destroyed' ? 'bg-[#475569] text-white' : 'text-[#94a3b8] hover:text-white'}`}>
+          已销毁 ({destroyedAgents.length})
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Agent list */}
         <div className="lg:col-span-2 bg-[#1e293b] rounded-lg border border-[#334155]">
-          {agents.length === 0 ? (
-            <p className="text-sm text-[#64748b] p-4">暂无 Agent</p>
+          {displayAgents.length === 0 ? (
+            <p className="text-sm text-[#64748b] p-4">{tab === 'active' ? '暂无活跃 Agent' : '暂无已销毁 Agent'}</p>
           ) : (
             <div className="divide-y divide-[#334155]/50">
-              {agents.map(a => {
+              {displayAgents.map(a => {
                 const style = STATE_STYLES[a.state] ?? STATE_STYLES.destroyed
                 const ttlLeft = a.lifecycle.ttl - (now - a.createdAt)
                 const model = models.find(m => m.id === a.modelId)
+                const isDisabled = a.enabled === false
+                const isProtected = a.id === 'genesis' || a.name === '时间助手'
                 return (
                   <div key={a.id} onClick={() => { setSelected(a); setShowForm(false); setEditing(false) }}
-                    className={`p-3 cursor-pointer hover:bg-[#334155]/30 transition-colors ${selected?.id === a.id ? 'bg-[#334155]/50' : ''}`}>
+                    className={`p-3 cursor-pointer hover:bg-[#334155]/30 transition-colors ${selected?.id === a.id ? 'bg-[#334155]/50' : ''} ${isDisabled ? 'opacity-50' : ''}`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className={`w-2 h-2 rounded-full ${style.dot}`} />
-                        <span className="text-sm font-medium">{a.name}</span>
+                        <span className={`text-sm font-medium ${isDisabled ? 'line-through' : ''}`}>{a.name}</span>
                         <span className="text-xs text-[#64748b] font-mono">{a.id}</span>
+                        {isProtected && <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400">核心</span>}
+                        {isDisabled && <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">已禁用</span>}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className={`px-1.5 py-0.5 rounded text-xs ${style.bg} ${style.text}`}>
                           {STATE_LABELS[a.state] ?? a.state}
                         </span>
-                        {(a.state === 'active' || a.state === 'idle') && (
+                        {a.state !== 'destroyed' && !isProtected && (
+                          <button onClick={(e) => { e.stopPropagation(); toggleEnabled(a) }}
+                            title={isDisabled ? '启用' : '禁用'}
+                            className={`w-8 h-4 rounded-full relative transition-colors ${isDisabled ? 'bg-[#475569]' : 'bg-[#22c55e]'}`}>
+                            <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isDisabled ? 'left-0.5' : 'left-[18px]'}`} />
+                          </button>
+                        )}
+                        {(a.state === 'active' || a.state === 'idle') && !isProtected && (
                           <button onClick={(e) => { e.stopPropagation(); toggleState(a) }}
                             className={`text-xs px-1.5 py-0.5 rounded transition-colors ${
                               a.state === 'active'
@@ -234,7 +267,7 @@ export default function Agents() {
                             {a.state === 'active' ? '停用' : '激活'}
                           </button>
                         )}
-                        {a.state !== 'destroyed' && (
+                        {a.state !== 'destroyed' && !isProtected && (
                           <button onClick={(e) => { e.stopPropagation(); handleDestroy(a.id) }}
                             className="text-xs text-red-400 hover:text-red-300">销毁</button>
                         )}

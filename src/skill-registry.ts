@@ -43,7 +43,7 @@ export function removeSkill(id: string): boolean {
   return found
 }
 
-export function modifySkill(id: string, patch: Partial<Pick<SkillConfig, 'name' | 'description' | 'promptTemplate' | 'requiredMcps' | 'compatibleModels'>>): boolean {
+export function modifySkill(id: string, patch: Partial<Pick<SkillConfig, 'name' | 'description' | 'promptTemplate' | 'requiredMcps' | 'compatibleModels' | 'enabled'>>): boolean {
   let found = false
   updateStore((s) => {
     const sk = s.skills.find((x) => x.id === id)

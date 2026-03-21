@@ -12,6 +12,7 @@ export interface ModelConfig {
   provider: string // anthropic, openai, deepseek, ollama, etc.
   capabilities: string[]
   costTier: CostTier
+  enabled?: boolean  // 全局启用/禁用，默认 true
   config: {
     apiKeyEnv?: string // env var name, e.g. "ANTHROPIC_API_KEY"
     baseUrl?: string
@@ -30,6 +31,7 @@ export interface SkillConfig {
   requiredMcps: string[]
   compatibleModels: string[] // ['*'] = all
   inputSchema?: Record<string, unknown>
+  enabled?: boolean  // 全局启用/禁用，默认 true
   createdAt: number
 }
 
@@ -46,6 +48,7 @@ export interface McpConfig {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  enabled?: boolean  // 全局启用/禁用，默认 true
   createdAt: number
 }
 
@@ -67,6 +70,7 @@ export interface AgentConfig {
     autoRenew: boolean
   }
   state: AgentState
+  enabled?: boolean  // 全局启用/禁用，默认 true
   createdAt: number
   lastActiveAt: number
 }

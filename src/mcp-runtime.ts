@@ -4,7 +4,10 @@ import { listModels } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
 import { createAgent, listAgents, destroyAgent, modifyAgent } from './agent-manager.js'
 import { addCronJob, listCronJobs, removeCronJob } from './cron.js'
-import { registerNode, getEvoMapStatus } from './evomap.js'
+import { registerNode, getEvoMapStatus } from './ext/evomap.js'
+import { builtinNjggzy } from './ext/njggzy.js'
+import { assertSafeUrl } from './ssrf.js'
+import { extractContent, htmlToMarkdown } from './web-extract.js'
 import type { McpConfig } from './types.js'
 
 
@@ -317,8 +320,8 @@ async function builtinWebSearch(_name: string, input: Record<string, unknown>): 
 }
 
 /**
- * fetch_url — lightweight HTTP GET + HTML-to-text extraction.
- * For static pages, RSS feeds, APIs, etc. Fast, no browser overhead.
+ * fetch_url — SSRF-safe HTTP GET + Readability extraction.
+ * Uses ssrf.ts for network security, web-extract.ts for content quality.
  */
 async function builtinFetchUrl(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
   const url = (input.url as string)?.trim()
@@ -327,6 +330,7 @@ async function builtinFetchUrl(_name: string, input: Record<string, unknown>): P
   const raw = (input.raw as boolean) || false
 
   try {
+    await assertSafeUrl(url)
     const res = await fetch(url, {
       headers: {
         'User-Agent': WEB_UA,
@@ -346,15 +350,14 @@ async function builtinFetchUrl(_name: string, input: Record<string, unknown>): P
     if (raw || !contentType.includes('html')) {
       content = body
     } else {
-      // Extract <title>
-      const titleMatch = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
-      const title = titleMatch ? htmlToText(titleMatch[1]) : ''
-
-      // Try to extract main content area (article, main, or body)
-      const mainMatch = body.match(/<(?:article|main)[^>]*>([\s\S]*?)<\/(?:article|main)>/i)
-      const textBody = htmlToText(mainMatch ? mainMatch[1] : body)
-
-      content = title ? `# ${title}\n\n${textBody}` : textBody
+      const result = await extractContent(body, url)
+      if (result?.text) {
+        content = result.title ? `# ${result.title}\n\n${result.text}` : result.text
+      } else {
+        // Fallback to basic conversion
+        const basic = htmlToMarkdown(body)
+        content = basic.title ? `# ${basic.title}\n\n${basic.text}` : basic.text
+      }
     }
 
     if (content.length > maxLen) {
@@ -368,9 +371,8 @@ async function builtinFetchUrl(_name: string, input: Record<string, unknown>): P
 }
 
 /**
- * scrape_page — Enhanced HTTP scraper inspired by SearXNG.
- * Pure HTTP + smart HTML parsing. No browser binary needed.
- * Multiple User-Agents, retry logic, deep content extraction.
+ * scrape_page — SSRF-safe deep scraper with Readability + visibility sanitization.
+ * Multiple User-Agents, retry logic, anti-prompt-injection via hidden element removal.
  */
 const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -383,61 +385,17 @@ function randomUA(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
 }
 
-/** Extract content matching a CSS-like selector (tag, .class, #id) from raw HTML */
-function extractBySelector(html: string, selector: string): string {
-  let pattern: string
-  if (selector.startsWith('#')) {
-    const id = selector.slice(1)
-    pattern = `<[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)</`
-  } else if (selector.startsWith('.')) {
-    const cls = selector.slice(1)
-    pattern = `<[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)</`
-  } else {
-    pattern = `<${selector}[^>]*>([\\s\\S]*?)</${selector}>`
-  }
-  const match = html.match(new RegExp(pattern, 'i'))
-  return match ? match[1] : ''
-}
-
-/** Deep HTML content extraction — tries multiple strategies like SearXNG */
-function extractPageContent(html: string): { title: string; content: string } {
-  // Title
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
-  const title = titleMatch ? htmlToText(titleMatch[1]).trim() : ''
-
-  // Strategy 1: <article> tag (blog posts, news)
-  const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
-  if (articleMatch) return { title, content: htmlToText(articleMatch[1]) }
-
-  // Strategy 2: <main> or role="main"
-  const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
-    || html.match(/<[^>]+role=["']main["'][^>]*>([\s\S]*?)<\/[^>]+>/i)
-  if (mainMatch) return { title, content: htmlToText(mainMatch[1] || mainMatch[2] || '') }
-
-  // Strategy 3: Common content divs
-  for (const cls of ['content', 'post-content', 'entry-content', 'article-content', 'main-content']) {
-    const m = html.match(new RegExp(`<[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)</div>`, 'i'))
-    if (m && m[1].length > 200) return { title, content: htmlToText(m[1]) }
-  }
-
-  // Strategy 4: Largest text block — strip noise then take body
-  const stripped = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-    .replace(/<header[\s\S]*?<\/header>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-  const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
-  return { title, content: htmlToText(bodyMatch ? bodyMatch[1] : stripped) }
-}
-
 async function builtinScrapePage(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
   const url = (input.url as string)?.trim()
   if (!url) return { content: '缺少 url 参数', isError: true }
   const maxLen = (input.maxLength as number) || 15000
-  const selector = input.selector as string | undefined
   const maxRetries = 2
+
+  try {
+    await assertSafeUrl(url)
+  } catch (e) {
+    return { content: `安全检查失败: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -466,15 +424,15 @@ async function builtinScrapePage(_name: string, input: Record<string, unknown>):
       }
 
       const body = await res.text()
-      let content: string
 
-      if (selector) {
-        const extracted = extractBySelector(body, selector)
-        if (!extracted) return { content: `选择器 "${selector}" 未匹配到内容`, isError: true }
-        content = htmlToText(extracted)
+      // Use Readability + visibility sanitization pipeline
+      const result = await extractContent(body, url)
+      let content: string
+      if (result?.text) {
+        content = result.title ? `# ${result.title}\n\n${result.text}` : result.text
       } else {
-        const { title, content: text } = extractPageContent(body)
-        content = title ? `# ${title}\n\n${text}` : text
+        const basic = htmlToMarkdown(body)
+        content = basic.title ? `# ${basic.title}\n\n${basic.text}` : basic.text
       }
 
       // Check if we got meaningful content
@@ -810,6 +768,74 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
       }
       return Promise.resolve({ content: `未知 evomap 操作: ${name}`, isError: true })
     },
+  },
+
+  // ═══ njggzy (南京公共资源交易) ═══
+  njggzy: {
+    tools: [
+      {
+        name: 'njggzy_scrape',
+        description: '抓取南京公共资源交易中心的招标/中标公告列表并存入本地数据库',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['tender', 'award'], description: '类型：tender=招标公告, award=中标公告' },
+            since_date: { type: 'string', description: '可选，只抓取该日期之后的公告（YYYY-MM-DD）' },
+          },
+          required: ['kind'],
+        },
+      },
+      {
+        name: 'njggzy_detail',
+        description: '抓取并解析单条招标/中标公告的详情页，提取合同估算价、中标候选人、投标报价等关键字段',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['tender', 'award'], description: '类型' },
+            url: { type: 'string', description: '详情页 URL' },
+          },
+          required: ['kind', 'url'],
+        },
+      },
+      {
+        name: 'njggzy_query_tenders',
+        description: '查询本地数据库中的招标公告（支持关键词搜索）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '搜索关键词（项目名称/标段名称）' },
+            limit: { type: 'number', description: '返回条数（默认50）' },
+          },
+        },
+      },
+      {
+        name: 'njggzy_query_awards',
+        description: '查询本地数据库中的中标公告（支持关键词搜索）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '搜索关键词（项目名称/标段名称/中标人）' },
+            limit: { type: 'number', description: '返回条数（默认50）' },
+          },
+        },
+      },
+      {
+        name: 'njggzy_match',
+        description: '招标-中标关联匹配：通过项目名和标段名自动关联招标公告与中标结果',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: '可选，项目名称关键词过滤' },
+          },
+        },
+      },
+      {
+        name: 'njggzy_stats',
+        description: '查看招标信息数据库统计：招标数量、中标数量、已匹配数量',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ],
+    call: builtinNjggzy,
   },
 }
 

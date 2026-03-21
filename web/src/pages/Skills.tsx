@@ -53,6 +53,11 @@ export default function Skills() {
     load()
   }
 
+  const toggleEnabled = async (s: any) => {
+    await api.modifySkill(s.id, { enabled: s.enabled === false ? true : false })
+    load()
+  }
+
   const handleUpload = async (file: File) => {
     const ext = file.name.toLowerCase()
     if (!ext.endsWith('.zip') && !ext.endsWith('.tar.gz') && !ext.endsWith('.tgz') && !ext.endsWith('.tar') && !ext.endsWith('.md')) {
@@ -184,14 +189,21 @@ export default function Skills() {
           <p className="text-sm text-[#64748b] p-4">暂无技能</p>
         ) : (
           <div className="divide-y divide-[#334155]/50">
-            {skills.map(s => (
-              <div key={s.id} className="p-4 hover:bg-[#334155]/30">
+            {skills.map(s => {
+              const isDisabled = s.enabled === false
+              return (
+              <div key={s.id} className={`p-4 hover:bg-[#334155]/30 ${isDisabled ? 'opacity-50' : ''}`}>
                 <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-medium">{s.name}</span>
-                    <span className="text-xs text-[#64748b] font-mono ml-2">{s.id}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-medium ${isDisabled ? 'line-through' : ''}`}>{s.name}</span>
+                    <span className="text-xs text-[#64748b] font-mono">{s.id}</span>
+                    {isDisabled && <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400">已禁用</span>}
                   </div>
-                  <div className="space-x-2">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => toggleEnabled(s)} title={isDisabled ? '启用' : '禁用'}
+                      className={`w-8 h-4 rounded-full relative transition-colors ${isDisabled ? 'bg-[#475569]' : 'bg-[#22c55e]'}`}>
+                      <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${isDisabled ? 'left-0.5' : 'left-[18px]'}`} />
+                    </button>
                     <button onClick={() => startEdit(s)} className="text-xs text-[#3b82f6] hover:text-[#60a5fa]">编辑</button>
                     <button onClick={() => handleRemove(s.id)} className="text-xs text-red-400 hover:text-red-300">删除</button>
                   </div>
@@ -201,7 +213,8 @@ export default function Skills() {
                   <pre className="text-xs text-[#64748b] mt-2 bg-[#0f172a] rounded p-2 overflow-x-auto max-h-20">{s.promptTemplate.slice(0, 200)}{s.promptTemplate.length > 200 ? '...' : ''}</pre>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>

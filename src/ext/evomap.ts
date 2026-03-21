@@ -4,8 +4,8 @@
  */
 import { randomBytes } from 'node:crypto'
 import { platform, arch } from 'node:os'
-import { loadStore, updateStore } from './store.js'
-import type { EvoMapState } from './types.js'
+import { loadStore, updateStore } from '../store.js'
+import type { EvoMapState } from '../types.js'
 
 const HUB_URL = 'https://evomap.ai'
 

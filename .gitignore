@@ -11,3 +11,8 @@ Thumbs.db
 .env.local
 .augment-rag/
 docs/ai-news/
+data/openclaw/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+requirements/
