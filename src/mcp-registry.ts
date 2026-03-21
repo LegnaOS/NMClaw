@@ -22,7 +22,14 @@ export function addMcp(input: {
     env: input.env,
     createdAt: Date.now(),
   }
-  updateStore((s) => s.mcps.push(mcp))
+  updateStore((s) => {
+    s.mcps.push(mcp)
+    // Auto-bind to Genesis — 确保 Genesis 始终拥有最高权限
+    const genesis = s.agents.find((a) => a.id === 'genesis')
+    if (genesis && !genesis.mcpIds.includes(mcp.id)) {
+      genesis.mcpIds.push(mcp.id)
+    }
+  })
   return mcp
 }
 

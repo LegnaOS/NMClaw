@@ -34,6 +34,7 @@ export const api = {
     }
     return res.json()
   },
+  importSkillUrl: (url: string) => request<any>('/skills/import-url', { method: 'POST', body: JSON.stringify({ url }) }),
 
   listMcps: () => request<any[]>('/mcps'),
   addMcp: (data: any) => request<any>('/mcps', { method: 'POST', body: JSON.stringify(data) }),

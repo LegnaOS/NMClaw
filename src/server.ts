@@ -37,14 +37,17 @@ import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGra
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
 import { loadStore, updateStore } from './store.js'
-import { seedDefaults } from './seed.js'
+import { seedDefaults, migrateBuiltins } from './seed.js'
 import { warmupStdioMcps } from './mcp-runtime.js'
+import { startHeartbeatLoop } from './evomap.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
 import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
 // Seed default models & agents on first run
 seedDefaults()
+// Migrate: ensure new builtin MCPs are added to existing installations
+migrateBuiltins()
 
 // Pre-connect all stdio MCPs
 console.log('⏳ 预连接 stdio MCP...')
@@ -52,6 +55,9 @@ warmupStdioMcps().then(() => console.log('✓ MCP 预连接完成'))
 
 // Start CRON scheduler
 startCron()
+
+// Resume EvoMap heartbeat if already registered
+startHeartbeatLoop()
 
 // Start Feishu WebSocket monitors for enabled channels
 startAllFeishuMonitors()
@@ -131,6 +137,27 @@ app.post('/api/skills/upload', async (c) => {
     return c.json(skill, 201)
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'upload failed' }, 400)
+  }
+})
+
+app.post('/api/skills/import-url', async (c) => {
+  const body = await c.req.json()
+  const { url } = body
+  if (!url || typeof url !== 'string') return c.json({ error: 'url required' }, 400)
+
+  const { fetchSkillFromUrl } = await import('./skill-upload.js')
+  try {
+    const parsed = await fetchSkillFromUrl(url)
+    const skill = addSkill({
+      name: parsed.name,
+      description: parsed.description,
+      promptTemplate: parsed.promptTemplate,
+      requiredMcps: parsed.requiredMcps ?? [],
+      compatibleModels: ['*'],
+    })
+    return c.json(skill, 201)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'import failed' }, 400)
   }
 })
 

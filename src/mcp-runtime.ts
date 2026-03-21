@@ -4,7 +4,9 @@ import { listModels } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
 import { createAgent, listAgents, destroyAgent, modifyAgent } from './agent-manager.js'
 import { addCronJob, listCronJobs, removeCronJob } from './cron.js'
+import { registerNode, getEvoMapStatus } from './evomap.js'
 import type { McpConfig } from './types.js'
+
 
 // ─── Types ───
 
@@ -200,10 +202,303 @@ async function builtinPlatform(name: string, input: Record<string, unknown>): Pr
       const ok = removeCronJob(input.jobId as string)
       return ok ? { content: `定时任务 ${input.jobId} 已删除` } : { content: `定时任务 ${input.jobId} 不存在`, isError: true }
     }
+    if (name === 'import_skill_url') {
+      const url = input.url as string
+      if (!url) return { content: '缺少 url 参数', isError: true }
+      const { fetchSkillFromUrl } = await import('./skill-upload.js')
+      const { addSkill } = await import('./skill-registry.js')
+      const parsed = await fetchSkillFromUrl(url)
+      const skill = addSkill({
+        name: parsed.name,
+        description: parsed.description,
+        promptTemplate: parsed.promptTemplate,
+        requiredMcps: parsed.requiredMcps ?? [],
+        compatibleModels: ['*'],
+      })
+      return { content: `技能导入成功:\n${JSON.stringify({ id: skill.id, name: skill.name, description: skill.description }, null, 2)}` }
+    }
     return { content: `未知平台操作: ${name}`, isError: true }
   } catch (e) {
     return { content: `平台操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
   }
+}
+
+// ─── Web tools: search / fetch / scrape ───
+
+const WEB_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+/** Minimal HTML-to-text: strip tags, collapse whitespace */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * web_search — DuckDuckGo HTML scraper (inspired by SearXNG duckduckgo engine).
+ * POST to https://html.duckduckgo.com/html/ with form data, parse results from HTML.
+ * No API key needed. No vqd needed for first page.
+ */
+async function builtinWebSearch(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  const query = (input.query as string)?.trim()
+  if (!query) return { content: '缺少 query 参数', isError: true }
+  const maxResults = Math.min((input.maxResults as number) || 10, 20)
+
+  try {
+    const formData = new URLSearchParams()
+    formData.set('q', query)
+    formData.set('b', '')      // first page
+    formData.set('kl', '')     // all regions
+
+    const res = await fetch('https://html.duckduckgo.com/html/', {
+      method: 'POST',
+      headers: {
+        'User-Agent': WEB_UA,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://html.duckduckgo.com/',
+        'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8',
+      },
+      body: formData.toString(),
+      signal: AbortSignal.timeout(15000),
+    })
+
+    if (!res.ok) return { content: `DuckDuckGo 返回 HTTP ${res.status}`, isError: true }
+    const html = await res.text()
+
+    // Parse results — DDG HTML uses div.web-result with h2>a for title/url and a.result__snippet for content
+    const results: { title: string; url: string; snippet: string }[] = []
+
+    // Extract each result block
+    const resultBlocks = html.split(/class="[^"]*web-result[^"]*"/)
+    for (let i = 1; i < resultBlocks.length && results.length < maxResults; i++) {
+      const block = resultBlocks[i]
+
+      // Extract URL from h2>a href
+      const urlMatch = block.match(/class="result__a"[^>]*href="([^"]+)"/)
+        || block.match(/<a[^>]*class="result__a"[^>]*href="([^"]+)"/)
+        || block.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*class="result__a"/)
+      if (!urlMatch) continue
+
+      let url = urlMatch[1]
+      // DDG wraps URLs through redirect: //duckduckgo.com/l/?uddg=...
+      if (url.includes('uddg=')) {
+        const uddg = url.match(/uddg=([^&]+)/)
+        if (uddg) url = decodeURIComponent(uddg[1])
+      }
+
+      // Extract title
+      const titleMatch = block.match(/class="result__a"[^>]*>([^<]+)</)
+      const title = titleMatch ? htmlToText(titleMatch[1]) : url
+
+      // Extract snippet
+      const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)(?:<\/a>|<\/td>)/)
+      const snippet = snippetMatch ? htmlToText(snippetMatch[1]) : ''
+
+      results.push({ title, url, snippet })
+    }
+
+    if (results.length === 0) {
+      return { content: JSON.stringify({ query, results: [], message: '未找到结果（可能被 DDG 限流）' }) }
+    }
+
+    return { content: JSON.stringify({ query, count: results.length, results }) }
+  } catch (e) {
+    return { content: `搜索失败: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
+/**
+ * fetch_url — lightweight HTTP GET + HTML-to-text extraction.
+ * For static pages, RSS feeds, APIs, etc. Fast, no browser overhead.
+ */
+async function builtinFetchUrl(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  const url = (input.url as string)?.trim()
+  if (!url) return { content: '缺少 url 参数', isError: true }
+  const maxLen = (input.maxLength as number) || 15000
+  const raw = (input.raw as boolean) || false
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': WEB_UA,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8',
+      },
+      signal: AbortSignal.timeout(20000),
+      redirect: 'follow',
+    })
+
+    if (!res.ok) return { content: `HTTP ${res.status} ${res.statusText}`, isError: true }
+
+    const contentType = res.headers.get('content-type') || ''
+    const body = await res.text()
+
+    let content: string
+    if (raw || !contentType.includes('html')) {
+      content = body
+    } else {
+      // Extract <title>
+      const titleMatch = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+      const title = titleMatch ? htmlToText(titleMatch[1]) : ''
+
+      // Try to extract main content area (article, main, or body)
+      const mainMatch = body.match(/<(?:article|main)[^>]*>([\s\S]*?)<\/(?:article|main)>/i)
+      const textBody = htmlToText(mainMatch ? mainMatch[1] : body)
+
+      content = title ? `# ${title}\n\n${textBody}` : textBody
+    }
+
+    if (content.length > maxLen) {
+      content = content.slice(0, maxLen) + '\n...[truncated]'
+    }
+
+    return { content }
+  } catch (e) {
+    return { content: `抓取失败: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
+/**
+ * scrape_page — Enhanced HTTP scraper inspired by SearXNG.
+ * Pure HTTP + smart HTML parsing. No browser binary needed.
+ * Multiple User-Agents, retry logic, deep content extraction.
+ */
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15',
+]
+
+function randomUA(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
+
+/** Extract content matching a CSS-like selector (tag, .class, #id) from raw HTML */
+function extractBySelector(html: string, selector: string): string {
+  let pattern: string
+  if (selector.startsWith('#')) {
+    const id = selector.slice(1)
+    pattern = `<[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)</`
+  } else if (selector.startsWith('.')) {
+    const cls = selector.slice(1)
+    pattern = `<[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)</`
+  } else {
+    pattern = `<${selector}[^>]*>([\\s\\S]*?)</${selector}>`
+  }
+  const match = html.match(new RegExp(pattern, 'i'))
+  return match ? match[1] : ''
+}
+
+/** Deep HTML content extraction — tries multiple strategies like SearXNG */
+function extractPageContent(html: string): { title: string; content: string } {
+  // Title
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+  const title = titleMatch ? htmlToText(titleMatch[1]).trim() : ''
+
+  // Strategy 1: <article> tag (blog posts, news)
+  const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
+  if (articleMatch) return { title, content: htmlToText(articleMatch[1]) }
+
+  // Strategy 2: <main> or role="main"
+  const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
+    || html.match(/<[^>]+role=["']main["'][^>]*>([\s\S]*?)<\/[^>]+>/i)
+  if (mainMatch) return { title, content: htmlToText(mainMatch[1] || mainMatch[2] || '') }
+
+  // Strategy 3: Common content divs
+  for (const cls of ['content', 'post-content', 'entry-content', 'article-content', 'main-content']) {
+    const m = html.match(new RegExp(`<[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)</div>`, 'i'))
+    if (m && m[1].length > 200) return { title, content: htmlToText(m[1]) }
+  }
+
+  // Strategy 4: Largest text block — strip noise then take body
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+  const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+  return { title, content: htmlToText(bodyMatch ? bodyMatch[1] : stripped) }
+}
+
+async function builtinScrapePage(_name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  const url = (input.url as string)?.trim()
+  if (!url) return { content: '缺少 url 参数', isError: true }
+  const maxLen = (input.maxLength as number) || 15000
+  const selector = input.selector as string | undefined
+  const maxRetries = 2
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const ua = attempt === 0 ? WEB_UA : randomUA()
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': ua,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+          'Accept-Encoding': 'gzip, deflate',
+          'DNT': '1',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Cache-Control': 'max-age=0',
+        },
+        signal: AbortSignal.timeout(25000),
+        redirect: 'follow',
+      })
+
+      if (!res.ok) {
+        if (attempt < maxRetries && (res.status === 403 || res.status === 429)) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+          continue
+        }
+        return { content: `HTTP ${res.status} ${res.statusText}`, isError: true }
+      }
+
+      const body = await res.text()
+      let content: string
+
+      if (selector) {
+        const extracted = extractBySelector(body, selector)
+        if (!extracted) return { content: `选择器 "${selector}" 未匹配到内容`, isError: true }
+        content = htmlToText(extracted)
+      } else {
+        const { title, content: text } = extractPageContent(body)
+        content = title ? `# ${title}\n\n${text}` : text
+      }
+
+      // Check if we got meaningful content
+      const cleanLen = content.replace(/\s+/g, '').length
+      if (cleanLen < 50 && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 500))
+        continue
+      }
+
+      if (content.length > maxLen) {
+        content = content.slice(0, maxLen) + '\n...[truncated]'
+      }
+
+      return { content }
+    } catch (e) {
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)))
+        continue
+      }
+      return { content: `页面抓取失败: ${e instanceof Error ? e.message : e}`, isError: true }
+    }
+  }
+
+  return { content: '抓取失败: 多次重试后仍无法获取内容', isError: true }
 }
 
 // ─── Built-in MCP registry ───
@@ -406,8 +701,115 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           required: ['jobId'],
         },
       },
+      {
+        name: 'import_skill_url',
+        description: '从 URL 导入技能（Markdown 格式的 SKILL.md）。用户说"把 https://xxx/skill.md 加到技能库"时调用此工具',
+        inputSchema: {
+          type: 'object',
+          properties: { url: { type: 'string', description: '技能文件的 URL（如 https://evomap.ai/skill.md）' } },
+          required: ['url'],
+        },
+      },
     ],
     call: builtinPlatform,
+  },
+  web: {
+    tools: [
+      {
+        name: 'web_search',
+        description: '在互联网上搜索信息（使用 DuckDuckGo，无需 API key）。返回标题、URL 和摘要。适合查找最新资讯、技术文档、产品信息等',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '搜索关键词' },
+            maxResults: { type: 'number', description: '最大返回结果数（默认 10，最多 20）' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'fetch_url',
+        description: '抓取网页内容并提取文本。适合静态页面、API 响应、RSS 等。速度快，无浏览器开销',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: '要抓取的 URL' },
+            maxLength: { type: 'number', description: '最大返回字符数（默认 15000）' },
+            raw: { type: 'boolean', description: '是否返回原始内容而不做 HTML-to-text 转换（默认 false）' },
+          },
+          required: ['url'],
+        },
+      },
+      {
+        name: 'scrape_page',
+        description: '增强型网页抓取（纯 HTTP，无需浏览器）。多策略内容提取 + 自动重试 + User-Agent 轮换。比 fetch_url 更智能的内容解析，适合复杂页面结构',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: '要抓取的 URL' },
+            maxLength: { type: 'number', description: '最大返回字符数（默认 15000）' },
+            selector: { type: 'string', description: '可选 CSS 选择器（标签名、.class、#id），只提取匹配元素的文本' },
+          },
+          required: ['url'],
+        },
+      },
+    ],
+    call: (name: string, input: Record<string, unknown>) => {
+      if (name === 'web_search') return builtinWebSearch(name, input)
+      if (name === 'fetch_url') return builtinFetchUrl(name, input)
+      if (name === 'scrape_page') return builtinScrapePage(name, input)
+      return Promise.resolve({ content: `未知 web 操作: ${name}`, isError: true })
+    },
+  },
+
+  // ═══ EvoMap (GEP-A2A) ═══
+  evomap: {
+    tools: [
+      {
+        name: 'evomap_register',
+        description: '注册当前节点到 EvoMap 协作进化网络。首次注册后返回 claim_url，用户访问该链接即可绑定节点到自己的 EvoMap 账户。已注册则返回现有状态',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+      },
+      {
+        name: 'evomap_status',
+        description: '查看 EvoMap 节点状态：是否已注册、node_id、积分余额、上次心跳时间、claim_url 等',
+        inputSchema: { type: 'object', properties: {}, required: [] },
+      },
+    ],
+    call: async (name: string, _input: Record<string, unknown>) => {
+      if (name === 'evomap_register') {
+        try {
+          const state = await registerNode()
+          return {
+            content: JSON.stringify({
+              registered: true,
+              node_id: state.nodeId,
+              claim_url: state.claimUrl,
+              claim_code: state.claimCode,
+              credit_balance: state.creditBalance,
+              message: `节点已注册。请用户访问 ${state.claimUrl} 绑定账户（激活码: ${state.claimCode}）。心跳已自动启动。`,
+            }, null, 2),
+          }
+        } catch (err) {
+          return { content: `EvoMap 注册失败: ${err instanceof Error ? err.message : err}`, isError: true }
+        }
+      }
+      if (name === 'evomap_status') {
+        const { registered, state } = getEvoMapStatus()
+        if (!registered) return { content: JSON.stringify({ registered: false, message: '尚未注册 EvoMap。使用 evomap_register 工具注册。' }) }
+        return {
+          content: JSON.stringify({
+            registered: true,
+            node_id: state!.nodeId,
+            claim_url: state!.claimUrl,
+            credit_balance: state!.creditBalance,
+            last_heartbeat: state!.lastHeartbeatAt ? new Date(state!.lastHeartbeatAt).toISOString() : 'never',
+            heartbeat_interval_s: (state!.heartbeatIntervalMs || 900000) / 1000,
+          }, null, 2),
+        }
+      }
+      return Promise.resolve({ content: `未知 evomap 操作: ${name}`, isError: true })
+    },
   },
 }
 

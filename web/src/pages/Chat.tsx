@@ -196,6 +196,15 @@ function DispatchBlock({ agentName, content, tools }: { agentName: string; conte
   )
 }
 
+// --- Detect confirmation request pattern ---
+const CONFIRM_PATTERN = /[是否(创建|执行|继续|操作)？|确认.*取消|请回复.*确认.*取消]/
+
+function needsConfirmation(content: string): boolean {
+  // Clean out tool/meta markers
+  const clean = content.replace(/\[(?:TOOL_CALL|TOOL_RESULT|STREAM_META|AGENT_INFO|FILE_OUTPUT|DISPATCH_START|DISPATCH_END):[^\]]*\]/g, '')
+  return CONFIRM_PATTERN.test(clean) && /\*\*确认\*\*/.test(clean) && /\*\*取消\*\*/.test(clean)
+}
+
 function MessageContent({ content }: { content: string }) {
   const segments = parseSegments(content)
   return (
@@ -380,6 +389,15 @@ export default function Chat() {
 
   const stopStreaming = () => { abortRef.current?.abort() }
 
+  // Quick reply for confirmation dialogs
+  const quickReply = async (text: string) => {
+    if (!isWeb || streaming) return
+    const userMsg: Message = { role: 'user', content: text, timestamp: Date.now() }
+    const history = [...webMessages, userMsg]
+    setWebMessages(history)
+    await sendWithHistory(history)
+  }
+
   const send = async () => {
     if (!isWeb) return // channel conversations are read-only in web UI
     const text = input.trim()
@@ -525,6 +543,19 @@ export default function Chat() {
                     )}
                     {msg.tokens != null && msg.tokens > 0 && <span>· {msg.tokens} tokens</span>}
                   </div>
+                  {/* Confirmation buttons — only on the last assistant message, not streaming, web channel */}
+                  {isWeb && !streaming && msg.role === 'assistant' && i === messages.length - 1 && needsConfirmation(msg.content) && (
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => quickReply('确认')}
+                        className="px-4 py-1.5 text-xs font-medium rounded-md bg-[#22c55e] hover:bg-[#16a34a] text-white transition-colors"
+                      >✅ 确认</button>
+                      <button
+                        onClick={() => quickReply('取消')}
+                        className="px-4 py-1.5 text-xs font-medium rounded-md bg-[#475569] hover:bg-[#64748b] text-white transition-colors"
+                      >❌ 取消</button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -117,6 +117,20 @@ export interface BypassConfig {
   neverBypass: string[]
 }
 
+// --- EvoMap ---
+
+export interface EvoMapState {
+  nodeId: string           // your_node_id from /a2a/hello
+  nodeSecret: string       // Bearer token for all mutating endpoints
+  hubNodeId: string        // Hub's identity (never use as sender_id)
+  claimCode: string        // e.g. "REEF-4X7K"
+  claimUrl: string         // e.g. "https://evomap.ai/claim/REEF-4X7K"
+  creditBalance: number
+  heartbeatIntervalMs: number  // default 900000 (15 min)
+  registeredAt: number
+  lastHeartbeatAt: number
+}
+
 // --- Store ---
 
 export interface StoreData {
@@ -130,6 +144,7 @@ export interface StoreData {
   graphs: GraphConfig[]
   channels: ChannelConfig[]
   pairings: PairingRecord[]
+  evomap?: EvoMapState
 }
 
 // --- LLM Adapter ---

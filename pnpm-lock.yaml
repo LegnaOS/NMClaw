@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.80.0
-        version: 0.80.0
+        version: 0.80.0(zod@3.25.76)
       '@hono/node-server':
         specifier: ^1.19.11
         version: 1.19.11(hono@4.12.8)
@@ -34,7 +34,7 @@ importers:
         version: 5.1.7
       openai:
         specifier: ^6.32.0
-        version: 6.32.0(ws@8.19.0)
+        version: 6.32.0(ws@8.19.0)(zod@3.25.76)
       ora:
         specifier: ^9.3.0
         version: 9.3.0
@@ -1973,6 +1973,9 @@ packages:
     resolution: {integrity: sha512-CzhO+pFNo8ajLM2d2IW/R93ipy99LWjtwblvC1RsoSUMZgyLbYFr221TnSNT7GjGdYui6P459mw9JH/g/zW2ug==}
     engines: {node: '>=18'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
   zustand@4.5.7:
     resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
     engines: {node: '>=12.7.0'}
@@ -1993,9 +1996,11 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.80.0':
+  '@anthropic-ai/sdk@0.80.0(zod@3.25.76)':
     dependencies:
       json-schema-to-ts: 3.1.1
+    optionalDependencies:
+      zod: 3.25.76
 
   '@babel/runtime@7.29.2': {}
 
@@ -3415,9 +3420,10 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  openai@6.32.0(ws@8.19.0):
+  openai@6.32.0(ws@8.19.0)(zod@3.25.76):
     optionalDependencies:
       ws: 8.19.0
+      zod: 3.25.76
 
   ora@9.3.0:
     dependencies:
@@ -3857,6 +3863,9 @@ snapshots:
   ws@8.19.0: {}
 
   yoctocolors@2.1.2: {}
+
+  zod@3.25.76:
+    optional: true
 
   zustand@4.5.7(@types/react@19.2.14)(react@19.2.4):
     dependencies:

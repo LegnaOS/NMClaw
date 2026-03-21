@@ -20,7 +20,14 @@ export function addSkill(input: {
     inputSchema: input.inputSchema,
     createdAt: Date.now(),
   }
-  updateStore((s) => s.skills.push(skill))
+  updateStore((s) => {
+    s.skills.push(skill)
+    // Auto-bind to Genesis — 确保 Genesis 始终拥有最高权限
+    const genesis = s.agents.find((a) => a.id === 'genesis')
+    if (genesis && !genesis.skillIds.includes(skill.id)) {
+      genesis.skillIds.push(skill.id)
+    }
+  })
   return skill
 }
 

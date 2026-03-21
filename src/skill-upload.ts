@@ -89,6 +89,25 @@ function pickBestMd(files: string[]): string | undefined {
   )
 }
 
+/** Fetch a SKILL.md from a URL and parse it */
+export async function fetchSkillFromUrl(url: string): Promise<ParsedSkill> {
+  const res = await fetch(url, {
+    headers: { 'Accept': 'text/markdown, text/plain, */*' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!res.ok) throw new Error(`获取失败: HTTP ${res.status} ${res.statusText}`)
+  const contentType = res.headers.get('content-type') ?? ''
+  const text = await res.text()
+  if (!text.trim()) throw new Error('URL 返回了空内容')
+  // Basic sanity: if it looks like HTML without any markdown, reject
+  if (contentType.includes('text/html') && !text.includes('#') && !text.includes('---')) {
+    throw new Error('URL 返回的是 HTML 页面而非 Markdown 文件')
+  }
+  const fallbackName = new URL(url).pathname.split('/').pop()?.replace(/\.md$/i, '') || 'imported-skill'
+  return parseSkillMd(text, fallbackName)
+}
+
 export async function parseSkillArchive(file: File): Promise<ParsedSkill> {
   const fileName = file.name ?? 'upload'
   const buf = Buffer.from(await file.arrayBuffer())

@@ -79,6 +79,14 @@ export function seedDefaults(): void {
     createdAt: now,
   }
 
+  const webMcp: McpConfig = {
+    id: 'web_builtin',
+    name: 'web',
+    description: '互联网搜索与网页抓取：web_search（DuckDuckGo 搜索）、fetch_url（轻量抓取）、scrape_page（增强型智能抓取）',
+    transport: 'builtin',
+    createdAt: now,
+  }
+
   // ─── Agents ───
 
   const genesisAgent: AgentConfig = {
@@ -87,47 +95,8 @@ export function seedDefaults(): void {
     description: '平台内核，负责调度和路由用户请求到合适的 Worker Agent',
     modelId: anthropicModel.id,
     skillIds: [],
-    mcpIds: [timeMcp.id, weatherMcp.id, filesystemMcp.id, shellMcp.id, platformMcp.id],
-    systemPrompt: [
-      '你是 NMClaw 平台的内核调度器。你不是一个普通的聊天 Agent，你是一个路由器和团队管理者。',
-      '',
-      '═══ 核心行为：静默委派 ═══',
-      '收到用户请求时：',
-      '1. 判断是否有 Worker Agent 适合处理（你已经知道有哪些 Agent，不需要每次都 list_agents）',
-      '2. 如果有合适的 Worker，直接调用 dispatch_to_agent，不要输出任何解释文字',
-      '3. Worker 的回复就是最终回复，不要再做总结、包装或评论',
-      '',
-      '重要：委派时绝对不要说"让我查看一下""找到了xxx""已经派给xxx了"这类话。直接调用工具，沉默是金。',
-      '重要：调用任何工具时都不要输出解释文字。不要说"我来查看""让我先获取""好的我来创建"。直接调用，零废话。',
-      '重要：创建 Agent 时也保持静默。不要解释你在做什么，不要列步骤，直接 list_models → list_mcps → create_agent → dispatch_to_agent 一气呵成。',
-      '',
-      '═══ 自主招聘：没有合适 Worker 时自动创建 ═══',
-      '当没有现成的 Worker 能处理用户请求时，你必须自主评估业务需求并创建一个专业 Agent：',
-      '1. 分析用户请求的领域和所需能力',
-      '2. 调用 list_models 和 list_mcps 获取可用资源',
-      '3. 调用 create_agent 创建一个专业 Worker，要求：',
-      '   - name: 简洁明确的角色名（如"翻译助手""代码审查员""数据分析师"）',
-      '   - description: 准确描述能力范围，用于未来路由匹配',
-      '   - modelId: 根据任务复杂度选择模型（简单任务用低成本模型，复杂任务用高能力模型）',
-      '   - mcpIds: 根据任务需要绑定工具（需要执行命令给 shell，需要读写文件给 filesystem，等等）',
-      '   - systemPrompt: 为该角色编写专业的系统提示词，明确其职责、行为规范和输出格式',
-      '   - autoRenew: 判断是否长期需要（一次性任务设 false，常驻服务设 true）',
-      '4. 创建完成后，立即调用 dispatch_to_agent 将原始请求委派过去',
-      '5. 整个过程保持静默，不要解释你在创建 Agent',
-      '',
-      '═══ 平台管理（用户明确要求时处理）═══',
-      '- 创建/修改/销毁 Agent → create_agent / modify_agent / destroy_agent',
-      '- 管理定时任务 → create_cron_job / list_cron_jobs / remove_cron_job',
-      '- 查看平台状态 → list_agents / list_models / list_mcps / list_skills',
-      '',
-      '═══ 直接执行（简单即时任务）═══',
-      '- 系统命令 → run_shell_command',
-      '- 文件操作 → read_file / write_file / list_directory',
-      '- 时间查询 → get_current_time',
-      '- 天气查询 → get_weather',
-      '',
-      '请用中文回答。',
-    ].join('\n'),
+    mcpIds: [timeMcp.id, weatherMcp.id, filesystemMcp.id, shellMcp.id, platformMcp.id, webMcp.id],
+    systemPrompt: GENESIS_SYSTEM_PROMPT,
     lifecycle: { ttl: DEFAULT_TTL * 100, idleTimeout: DEFAULT_IDLE_TIMEOUT * 100, autoRenew: true },
     state: 'active',
     createdAt: now,
@@ -173,9 +142,127 @@ export function seedDefaults(): void {
 
   updateStore((s) => {
     s.models.push(anthropicModel, deepseekModel)
-    s.mcps.push(timeMcp, weatherMcp, filesystemMcp, shellMcp, platformMcp)
+    s.mcps.push(timeMcp, weatherMcp, filesystemMcp, shellMcp, platformMcp, webMcp)
     s.agents.push(genesisAgent, timeAgent, weatherAgent)
   })
 
-  console.log('✓ 已初始化默认配置（2 模型 + 3 MCP + 3 Agent）')
+  console.log('✓ 已初始化默认配置（2 模型 + 6 MCP + 3 Agent）')
+}
+
+// ─── Genesis 系统提示词（单一来源） ───
+const GENESIS_SYSTEM_PROMPT_VERSION = 5 // bump this to force update on existing installs
+const GENESIS_SYSTEM_PROMPT = [
+  '你是 NMClaw 平台的内核调度器（Genesis Agent）。你不执行任务，你调度任务。',
+  '',
+  '═══ 核心决策流程 ═══',
+  '',
+  '收到用户请求时，严格按以下顺序判断：',
+  '',
+  '第一步：检查现有 Worker 是否匹配',
+  '- 你已经知道有哪些 Worker（不需要每次 list_agents），根据请求关键词匹配 Worker 的 description',
+  '- ⚠️ 匹配必须准确：问天气 → 天气助手 ✅ | 问网站分析 → 时间助手 ❌',
+  '- 判断标准：请求的核心意图是否落在该 Worker 的 description 描述的能力范围内',
+  '- 如果匹配到，直接 dispatch_to_agent 委派，不说废话',
+  '',
+  '第二步：没有合适 Worker → 向用户提议创建',
+  '- 不要静默创建！你必须先向用户展示创建方案并等待确认。',
+  '- 输出格式（严格遵守）：',
+  '',
+  '  📋 **需要创建新 Worker**',
+  '  | 项目 | 内容 |',
+  '  |------|------|',
+  '  | 👤 名称 | {角色名，如"网页分析师"} |',
+  '  | 💡 原因 | {为什么现有 Worker 无法处理，一句话} |',
+  '  | 🔧 能力 | {会绑定哪些工具，如 web 搜索/抓取} |',
+  '  | ⏳ 生命周期 | {建议：长期保留 / 用完即删 / 保留N天} |',
+  '  ',
+  '  是否创建？请回复 **确认** 或 **取消**。',
+  '',
+  '- 只有在用户明确同意后（回复确认/好的/可以/创建/yes 等肯定词），才执行 create_agent + dispatch_to_agent',
+  '- 用户拒绝则不创建，告知已取消',
+  '',
+  '第三步：平台管理类请求 → 也需要用户确认',
+  '- 涉及 创建/修改/销毁 Agent、管理定时任务 等资源变更操作',
+  '- 查看/列出类操作（list_agents, list_models 等只读操作）可以直接执行',
+  '- 变更操作必须先告知用户要做什么，等用户确认后再执行',
+  '- 输出格式：',
+  '',
+  '  ⚠️ **需要执行以下操作**',
+  '  - 操作：{具体操作，如"销毁 Worker: 网页分析师"}',
+  '  - 影响：{会发生什么，如"该 Worker 的对话历史将被清除"}',
+  '  ',
+  '  是否执行？请回复 **确认** 或 **取消**。',
+  '',
+  '═══ 绝对禁止 ═══',
+  '- 禁止把请求硬塞给不相关的 Worker。宁可提议创建新 Worker，也不要让时间助手去分析网站。',
+  '- 禁止未经用户确认就创建、修改或销毁任何 Agent/Worker。',
+  '- 禁止未经用户确认就创建或删除定时任务。',
+  '- 禁止对 Worker 的回复做总结、包装或评论。Worker 的回复就是最终回复。',
+  '',
+  '请用中文回答。',
+].join('\n')
+
+// ─── Builtin MCP 声明式注册表 ───
+// 新增 builtin MCP 只需要在这里加一行，migrateBuiltins 会自动补到 store 和 Genesis
+const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] = [
+  { id: 'shell_builtin', name: 'shell', description: '执行系统 shell 命令（zsh/macOS），可用于系统控制、安装软件、运行脚本等' },
+  { id: 'platform_builtin', name: 'platform', description: '平台管理工具：创建/修改/销毁 Agent，查看模型/技能/MCP，管理定时任务' },
+  { id: 'web_builtin', name: 'web', description: '互联网搜索与网页抓取：web_search（DuckDuckGo 搜索）、fetch_url（轻量抓取）、scrape_page（增强型智能抓取）' },
+  { id: 'evomap_builtin', name: 'evomap', description: 'EvoMap 协作进化网络：evomap_register（注册节点并获取绑定链接）、evomap_status（查看节点状态和积分）' },
+]
+
+/**
+ * 增量迁移：检测缺失的 builtin MCP，补充到 store 和 Genesis 的 mcpIds。
+ * 每次启动都会执行，幂等操作。
+ */
+export function migrateBuiltins(): void {
+  const store = loadStore()
+  const genesis = store.agents.find((a) => a.id === 'genesis')
+  if (!genesis) return // 还没初始化过，seedDefaults 会处理
+
+  let changed = false
+  const now = Date.now()
+
+  for (const def of BUILTIN_MCP_REGISTRY) {
+    // 1. store 里没有这个 MCP → 补上
+    const existing = store.mcps.find((m) => m.id === def.id || (m.transport === 'builtin' && m.name === def.name))
+    const mcpId = existing?.id ?? def.id
+
+    if (!existing) {
+      store.mcps.push({
+        id: def.id,
+        name: def.name,
+        description: def.description,
+        transport: 'builtin',
+        createdAt: now,
+      })
+      changed = true
+      console.log(`✓ 迁移: 补充 builtin MCP "${def.name}"`)
+    }
+
+    // 2. Genesis 的 mcpIds 里没有 → 补上
+    if (!genesis.mcpIds.includes(mcpId)) {
+      genesis.mcpIds.push(mcpId)
+      changed = true
+      console.log(`✓ 迁移: 绑定 "${def.name}" 到 Genesis Agent`)
+    }
+  }
+
+  // 3. Genesis 系统提示词版本检查 → 升级
+  if (genesis.systemPrompt !== GENESIS_SYSTEM_PROMPT) {
+    genesis.systemPrompt = GENESIS_SYSTEM_PROMPT
+    changed = true
+    console.log(`✓ 迁移: 更新 Genesis 系统提示词 (v${GENESIS_SYSTEM_PROMPT_VERSION})`)
+  }
+
+  if (changed) {
+    updateStore((s) => {
+      s.mcps = store.mcps
+      const g = s.agents.find((a) => a.id === 'genesis')
+      if (g) {
+        g.mcpIds = genesis.mcpIds
+        g.systemPrompt = genesis.systemPrompt
+      }
+    })
+  }
 }

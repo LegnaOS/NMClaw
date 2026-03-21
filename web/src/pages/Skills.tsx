@@ -11,6 +11,8 @@ export default function Skills() {
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [importUrl, setImportUrl] = useState('')
+  const [importingUrl, setImportingUrl] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = () => api.listSkills().then(setSkills)
@@ -77,6 +79,22 @@ export default function Skills() {
     if (file) handleUpload(file)
   }
 
+  const handleImportUrl = async () => {
+    const url = importUrl.trim()
+    if (!url) return
+    setImportingUrl(true)
+    setUploadError('')
+    try {
+      await api.importSkillUrl(url)
+      setImportUrl('')
+      load()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : '导入失败')
+    } finally {
+      setImportingUrl(false)
+    }
+  }
+
   return (
     <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
@@ -112,6 +130,18 @@ export default function Skills() {
               支持 .zip / .tar.gz / .tgz / .md — 压缩包内需包含 SKILL.md
             </p>
           </div>
+          {/* URL import */}
+          <div className="flex gap-2">
+            <input value={importUrl} onChange={e => setImportUrl(e.target.value)}
+              placeholder="从 URL 导入，如 https://evomap.ai/skill.md"
+              onKeyDown={e => e.key === 'Enter' && handleImportUrl()}
+              className="flex-1 bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+            <button onClick={handleImportUrl} disabled={!importUrl.trim() || importingUrl}
+              className="px-3 py-1.5 bg-[#10b981] hover:bg-[#059669] disabled:opacity-40 rounded-md text-sm transition-colors whitespace-nowrap">
+              {importingUrl ? '导入中...' : '从 URL 导入'}
+            </button>
+          </div>
+
           {uploadError && <p className="text-xs text-red-400">{uploadError}</p>}
 
           <div className="flex items-center gap-3">
