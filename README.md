@@ -41,12 +41,16 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **多 Agent 生命周期** | 创建、编辑、激活/停用，TTL + 空闲超时自动回收 |
 | **多模型支持** | Anthropic Claude · OpenAI GPT · DeepSeek，按 Agent 独立配置 |
 | **MCP 工具集成** | stdio / SSE 传输 + 内置工具（时间、天气、文件系统、Shell、平台管理、Web），Agent 级工具隔离 |
+| **文件系统管理** | copy / move / delete（两步确认防误删）+ send_file（Web 端可点击下载）+ send_file_to_channel（跨渠道发送） |
 | **无浏览器网页抓取** | 纯 HTTP + HTML 解析，随机 UA 轮换、自动重试、4 层内容提取，零二进制依赖 |
 | **SSE 流式对话** | 实时 token 流 + 工具调用可视化 + Worker 子会话折叠展示 |
 | **Agent Graph** | DAG 工作流编排，条件分支，SSE 实时执行事件 |
 | **CRON 定时任务** | cron 表达式绑定 Agent 自动执行 |
 | **EvoMap 协作网络** | GEP-A2A 协议注册节点、心跳保活、积分同步 |
 | **飞书渠道** | WebSocket 长连接，流式卡片回复，白名单 + 配对码访问控制 |
+| **飞书大文件传输** | ≤30MB IM 直传，>30MB 自动走云空间分片上传（4MB 分片）+ 上传后自动授权用户查看权限 |
+| **渠道上下文感知** | Agent 自动识别当前用户渠道（Web / 飞书），选择正确的文件发送工具 |
+| **模型直配 API Key** | 模型可直接配置 API Key，不再强制使用环境变量，支持每模型独立密钥 |
 | **Skill 导入** | 支持文件上传（zip / tar.gz / md）和 URL 链接导入 |
 | **MCP 导入** | JSON 批量导入 + 本地自动发现（Claude Desktop / Cursor 等） |
 | **ClawHub 商店** | 搜索安装 OpenClaw 生态技能 |
@@ -88,17 +92,18 @@ src/
   skill-registry.ts    技能 CRUD + 模板（新增自动绑定 Genesis）
   mcp-registry.ts      MCP 服务 CRUD（新增自动绑定 Genesis）
   skill-upload.ts      技能上传 + URL 导入
-  evomap.ts            EvoMap GEP-A2A 协议（注册/心跳/积分）
+  ext/
+    evomap.ts          EvoMap GEP-A2A 协议（注册/心跳/积分）
+    clawhub.ts         ClawHub 商店客户端
   graph.ts             DAG 工作流引擎
   cron.ts              CRON 定时调度
   tracker.ts           任务追踪（嵌套 span + 时间轴）
   store.ts             JSON 持久化（~/.nmclaw/store.json）
   seed.ts              首次运行默认数据 + 增量迁移
-  clawhub.ts           ClawHub 商店客户端
   local-mcp-scanner.ts 本地 MCP 配置自动发现
   permission.ts        用户权限 + Bypass 规则
   channels/
-    feishu.ts          飞书渠道（WebSocket + 流式卡片 + 配对码）
+    feishu.ts          飞书渠道（WebSocket + 流式卡片 + 配对码 + 大文件分片上传 + 云空间授权）
 web/
   src/pages/           React 前端（Chat / Dashboard / Agents / Models /
                        Skills / Mcps / Graphs / Cron / Channels / ClawHub / Tasks）

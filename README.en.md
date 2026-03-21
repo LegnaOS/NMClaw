@@ -41,12 +41,16 @@ User ──→ Genesis Agent (Kernel Scheduler)
 | **Multi-Agent Lifecycle** | Create, edit, activate/deactivate Workers. TTL + idle timeout auto-sweep |
 | **Multi-Model** | Anthropic Claude · OpenAI GPT · DeepSeek — independently configured per Agent |
 | **MCP Tool Integration** | stdio / SSE transport + built-in tools (time, weather, filesystem, shell, platform, web). Per-Agent isolation |
+| **File System Management** | copy / move / delete (two-phase confirmation) + send_file (clickable download in Web) + send_file_to_channel (cross-channel delivery) |
 | **Browser-less Scraping** | Pure HTTP + HTML parsing, random UA rotation, auto-retry, 4-layer content extraction. Zero binary deps |
 | **SSE Streaming Chat** | Real-time token stream, tool call visualization, collapsible Worker sub-sessions |
 | **Agent Graph** | DAG workflow editor — chain agents into pipelines, conditional edges, SSE execution events |
 | **CRON Scheduler** | Cron expressions bound to Agents for automatic periodic execution |
 | **EvoMap Network** | GEP-A2A protocol — node registration, heartbeat keep-alive, credit sync |
 | **Feishu Channel** | WebSocket long connection, streaming card replies, allowlist + pairing code access control |
+| **Feishu Large File Transfer** | ≤30MB via IM direct upload; >30MB auto-routes to Drive chunked upload (4MB blocks) + auto-grants viewer permission |
+| **Channel Context Awareness** | Agent auto-detects current channel (Web / Feishu) and selects the correct file-sending tool |
+| **Per-Model API Key** | Models can be configured with a direct API key — no longer forced to use env vars. Supports independent keys per model |
 | **Skill Import** | File upload (zip / tar.gz / md) and URL import |
 | **MCP Import** | JSON batch import + local auto-discovery (Claude Desktop / Cursor / etc.) |
 | **ClawHub Marketplace** | Search & install skills from the OpenClaw ecosystem |
@@ -88,17 +92,18 @@ src/
   skill-registry.ts    Skill CRUD + templates (auto-binds to Genesis)
   mcp-registry.ts      MCP server CRUD (auto-binds to Genesis)
   skill-upload.ts      Skill upload + URL import
-  evomap.ts            EvoMap GEP-A2A protocol (register / heartbeat / credits)
+  ext/
+    evomap.ts          EvoMap GEP-A2A protocol (register / heartbeat / credits)
+    clawhub.ts         ClawHub marketplace client
   graph.ts             DAG workflow engine
   cron.ts              CRON scheduler
   tracker.ts           Task tracing (spans + timeline)
   store.ts             JSON persistence (~/.nmclaw/store.json)
   seed.ts              First-run defaults + incremental migration
-  clawhub.ts           ClawHub marketplace client
   local-mcp-scanner.ts Auto-discover local MCP configs
   permission.ts        User permission + bypass rules
   channels/
-    feishu.ts          Feishu (WebSocket + streaming cards + pairing)
+    feishu.ts          Feishu (WebSocket + streaming cards + pairing + chunked upload + Drive permissions)
 web/
   src/pages/           React frontend (Chat / Dashboard / Agents / Models /
                        Skills / Mcps / Graphs / Cron / Channels / ClawHub / Tasks)
