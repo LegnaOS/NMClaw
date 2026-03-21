@@ -214,6 +214,81 @@ class StreamingCard {
 }
 
 // ═══════════════════════════════════
+//  Channel Message Log (in-memory)
+// ═══════════════════════════════════
+
+export interface ChannelMessage {
+  id: string
+  conversationId: string  // channelId:senderId
+  channelId: string
+  channelName: string
+  channelType: string
+  senderId: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: number
+}
+
+const channelMessageLog: ChannelMessage[] = []
+const MAX_CHANNEL_MESSAGES = 500
+
+function recordChannelMessage(msg: Omit<ChannelMessage, 'id'>): void {
+  channelMessageLog.push({ ...msg, id: `cm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}` })
+  if (channelMessageLog.length > MAX_CHANNEL_MESSAGES) {
+    channelMessageLog.splice(0, channelMessageLog.length - MAX_CHANNEL_MESSAGES)
+  }
+  // Notify SSE subscribers
+  for (const cb of channelMessageSubscribers) cb()
+}
+
+export function getChannelMessages(channelId?: string, limit = 50): ChannelMessage[] {
+  const filtered = channelId ? channelMessageLog.filter(m => m.channelId === channelId) : channelMessageLog
+  return filtered.slice(-limit)
+}
+
+export interface ChannelConversation {
+  conversationId: string
+  channelId: string
+  channelName: string
+  channelType: string
+  senderId: string
+  lastMessage: string
+  lastActiveAt: number
+  messageCount: number
+}
+
+export function getChannelConversations(): ChannelConversation[] {
+  const map = new Map<string, ChannelConversation>()
+  for (const msg of channelMessageLog) {
+    const existing = map.get(msg.conversationId)
+    if (!existing) {
+      map.set(msg.conversationId, {
+        conversationId: msg.conversationId,
+        channelId: msg.channelId,
+        channelName: msg.channelName,
+        channelType: msg.channelType,
+        senderId: msg.senderId,
+        lastMessage: msg.content.slice(0, 80),
+        lastActiveAt: msg.timestamp,
+        messageCount: 1,
+      })
+    } else {
+      existing.lastMessage = msg.content.slice(0, 80)
+      existing.lastActiveAt = msg.timestamp
+      existing.messageCount++
+    }
+  }
+  return [...map.values()].sort((a, b) => b.lastActiveAt - a.lastActiveAt)
+}
+
+// SSE subscriber for real-time updates
+const channelMessageSubscribers = new Set<() => void>()
+export function subscribeChannelMessages(cb: () => void): () => void {
+  channelMessageSubscribers.add(cb)
+  return () => channelMessageSubscribers.delete(cb)
+}
+
+// ═══════════════════════════════════
 //  Message Handling
 // ═══════════════════════════════════
 
@@ -356,9 +431,22 @@ async function processMessage(
   chatId: string,
   messageId: string,
   userText: string,
+  senderId: string,
 ): Promise<void> {
-  const messages: ChatMessage[] = [{ role: 'user', content: userText }]
   const useStreaming = cfg.streaming !== false && cfg.appId && cfg.appSecret
+  const convId = `${channel.id}:${senderId}`
+  const msgBase = { conversationId: convId, channelId: channel.id, channelName: channel.name, channelType: channel.type, senderId }
+
+  // Record user message
+  recordChannelMessage({ ...msgBase, role: 'user', content: userText, timestamp: Date.now() })
+
+  // Build messages with conversation history
+  const history = channelMessageLog
+    .filter(m => m.conversationId === convId)
+    .slice(-20) // keep last 20 messages for context
+    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+  // history already includes the just-recorded user message
+  const messages: ChatMessage[] = history
 
   if (useStreaming) {
     // Streaming card reply
@@ -378,9 +466,12 @@ async function processMessage(
         }
       }
       await card.close(fullText || '(无回复内容)')
+      recordChannelMessage({ ...msgBase, role: 'assistant', content: fullText || '(无回复内容)', timestamp: Date.now() })
     } catch (err) {
       console.error(`[feishu] 流式回复失败:`, err)
-      await card.close(`处理失败: ${err instanceof Error ? err.message : err}`)
+      const errText = `处理失败: ${err instanceof Error ? err.message : err}`
+      await card.close(errText)
+      recordChannelMessage({ ...msgBase, role: 'assistant', content: errText, timestamp: Date.now() })
     }
   } else {
     // Fallback: collect full response then reply as text
@@ -406,6 +497,7 @@ async function processMessage(
         data: { msg_type: 'text', content: JSON.stringify({ text: fullResponse }) },
       }).catch((e) => console.error(`[feishu] 回复失败:`, e))
     }
+    recordChannelMessage({ ...msgBase, role: 'assistant', content: fullResponse, timestamp: Date.now() })
   }
 }
 
@@ -513,7 +605,7 @@ export async function startFeishuMonitor(channel: ChannelConfig): Promise<{ ok: 
         if (!allowed) return
 
         // Process async
-        processMessage(channel, cfg, chatId, messageId, userText).catch((err) => {
+        processMessage(channel, cfg, chatId, messageId, userText, sender).catch((err) => {
           console.error(`[feishu-ws] 处理消息失败:`, err)
         })
       } catch (err) {
@@ -632,7 +724,7 @@ export async function handleFeishuEvent(channelId: string, body: any): Promise<a
   const sender = event.sender?.sender_id?.open_id || 'unknown'
   console.log(`[feishu-callback] 收到消息 from=${sender}: ${userText.slice(0, 100)}`)
 
-  processMessage(channel, cfg, chatId, messageId, userText).catch((err) => {
+  processMessage(channel, cfg, chatId, messageId, userText, sender).catch((err) => {
     console.error(`[feishu-callback] 处理消息失败:`, err)
   })
 

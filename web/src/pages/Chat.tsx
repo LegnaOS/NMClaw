@@ -1,9 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from '../api'
 
-type Message = { role: 'user' | 'assistant'; content: string; timestamp: number; tokens?: number; durationMs?: number; agentName?: string }
+type Message = {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: number
+  tokens?: number
+  durationMs?: number
+  agentName?: string
+  channelSource?: { channelName: string; channelType: string; senderId: string }
+}
+
+type Conversation = {
+  id: string  // 'web' or conversationId
+  label: string
+  channelType?: string
+  channelName?: string
+  senderId?: string
+  lastMessage: string
+  lastActiveAt: number
+  unread: boolean
+}
 
 const CHAT_STORAGE_KEY = 'nmclaw_chat_messages'
 
@@ -23,6 +42,14 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
+  return new Date(ts).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
 function extractTokens(content: string): number | undefined {
   const m = content.match(/\[STREAM_META:tokens=(\d+)\]/)
   return m ? parseInt(m[1]) : undefined
@@ -32,6 +59,8 @@ function extractAgentName(content: string): string | undefined {
   const m = content.match(/\[AGENT_INFO:[^|]*\|([^\]]+)\]/)
   return m ? m[1] : undefined
 }
+
+const CHANNEL_ICONS: Record<string, string> = { feishu: '🔵', wecom: '🟢', dingtalk: '🔷', web: '🌐' }
 
 // --- Content parsing ---
 
@@ -50,20 +79,17 @@ function parseSegments(content: string): Segment[] {
   for (const part of parts) {
     if (!part) continue
 
-    // Dispatch start
     const dsMatch = part.match(/^\[DISPATCH_START:([^|]*)\|([^\]]*)\]$/)
     if (dsMatch) {
       if (curTool) { segments.push({ type: 'tool', ...curTool }); curTool = null }
       curDispatch = { agentId: dsMatch[1], agentName: dsMatch[2], content: '', tools: [] }
       continue
     }
-    // Dispatch end
     if (part.startsWith('[DISPATCH_END:')) {
       if (curDispatch) { segments.push({ type: 'dispatch', ...curDispatch }); curDispatch = null }
       continue
     }
 
-    // Inside dispatch: collect tool calls and text
     if (curDispatch) {
       const tcMatch = part.match(/^\[TOOL_CALL:(.+)\]$/)
       if (tcMatch) { curDispatch.tools.push({ name: tcMatch[1] }); continue }
@@ -133,7 +159,7 @@ function ToolBlock({ name, result, fileOutput }: { name: string; result?: string
   )
 }
 
-// --- Dispatch block (worker agent sub-conversation) ---
+// --- Dispatch block ---
 
 function DispatchBlock({ agentName, content, tools }: { agentName: string; content: string; tools: { name: string; result?: string }[] }) {
   const [expanded, setExpanded] = useState(true)
@@ -187,21 +213,135 @@ function MessageContent({ content }: { content: string }) {
   )
 }
 
+// --- Channel source badge ---
+
+function ChannelBadge({ source }: { source: { channelName: string; channelType: string; senderId: string } }) {
+  const icon = CHANNEL_ICONS[source.channelType] || '📨'
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#334155]/50 text-[10px] text-[#94a3b8]">
+      <span>{icon}</span>
+      <span>{source.channelName}</span>
+      <span className="text-[#475569]">·</span>
+      <span className="text-[#64748b] font-mono">{source.senderId.slice(-6)}</span>
+    </span>
+  )
+}
+
+// --- Conversation sidebar ---
+
+function ConversationList({
+  conversations,
+  activeId,
+  onSelect,
+}: {
+  conversations: Conversation[]
+  activeId: string
+  onSelect: (id: string) => void
+}) {
+  return (
+    <div className="w-56 shrink-0 border-r border-[#334155] bg-[#0f172a] flex flex-col h-full">
+      <div className="px-3 py-2.5 border-b border-[#334155] text-xs text-[#64748b] font-medium">会话列表</div>
+      <div className="flex-1 overflow-auto">
+        {conversations.map((conv) => (
+          <button
+            key={conv.id}
+            onClick={() => onSelect(conv.id)}
+            className={`w-full text-left px-3 py-2.5 border-b border-[#334155]/30 transition-colors ${
+              activeId === conv.id ? 'bg-[#1e293b]' : 'hover:bg-[#1e293b]/50'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm">{CHANNEL_ICONS[conv.channelType || 'web'] || '💬'}</span>
+              <span className={`text-xs font-medium truncate ${activeId === conv.id ? 'text-[#f1f5f9]' : 'text-[#94a3b8]'}`}>
+                {conv.label}
+              </span>
+              {conv.unread && <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] shrink-0 ml-auto" />}
+            </div>
+            <div className="mt-1 text-[10px] text-[#475569] truncate">{conv.lastMessage || '暂无消息'}</div>
+            <div className="mt-0.5 text-[10px] text-[#334155]">{formatRelativeTime(conv.lastActiveAt)}</div>
+          </button>
+        ))}
+        {conversations.length === 0 && (
+          <div className="px-3 py-6 text-xs text-[#475569] text-center">暂无会话</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // --- Main component ---
 
 export default function Chat() {
-  const [messages, setMessages] = useState<Message[]>(loadMessages)
+  const [webMessages, setWebMessages] = useState<Message[]>(loadMessages)
+  const [channelConvs, setChannelConvs] = useState<any[]>([])
+  const [channelMessages, setChannelMessages] = useState<any[]>([])
+  const [activeConv, setActiveConv] = useState('web')
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Current messages based on active conversation
+  const isWeb = activeConv === 'web'
+  const messages: Message[] = isWeb
+    ? webMessages
+    : channelMessages
+        .filter((m: any) => m.conversationId === activeConv)
+        .map((m: any) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: m.timestamp,
+          channelSource: { channelName: m.channelName, channelType: m.channelType, senderId: m.senderId },
+        }))
+
+  // Build conversation list
+  const conversations: Conversation[] = [
+    {
+      id: 'web',
+      label: 'Web 对话',
+      channelType: 'web',
+      lastMessage: webMessages.length > 0 ? webMessages[webMessages.length - 1].content.replace(/\[.*?\]/g, '').slice(0, 40) : '',
+      lastActiveAt: webMessages.length > 0 ? webMessages[webMessages.length - 1].timestamp : Date.now(),
+      unread: false,
+    },
+    ...channelConvs.map((c: any) => ({
+      id: c.conversationId,
+      label: `${c.channelName} · ${c.senderId.slice(-6)}`,
+      channelType: c.channelType,
+      channelName: c.channelName,
+      senderId: c.senderId,
+      lastMessage: c.lastMessage || '',
+      lastActiveAt: c.lastActiveAt,
+      unread: false,
+    })),
+  ]
+
+  // Poll channel conversations
+  const fetchChannelData = useCallback(async () => {
+    try {
+      const [convs, msgs] = await Promise.all([
+        api.getChannelConversations(),
+        api.getChannelMessages(undefined, 200),
+      ])
+      setChannelConvs(convs)
+      setChannelMessages(msgs)
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    fetchChannelData()
+    pollRef.current = setInterval(fetchChannelData, 5000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [fetchChannelData])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-  useEffect(() => { if (!streaming) saveMessages(messages) }, [messages, streaming])
+  useEffect(() => { if (!streaming) saveMessages(webMessages) }, [webMessages, streaming])
   useEffect(() => { if (editingIdx !== null) editRef.current?.focus() }, [editingIdx])
 
   const sendWithHistory = async (history: Message[]) => {
@@ -210,7 +350,7 @@ export default function Chat() {
     setStreaming(true)
     const startTime = Date.now()
     const assistantMsg: Message = { role: 'assistant', content: '', timestamp: Date.now() }
-    setMessages([...history, assistantMsg])
+    setWebMessages([...history, assistantMsg])
 
     try {
       for await (const chunk of api.chat(history.map((m) => ({ role: m.role, content: m.content })), abort.signal)) {
@@ -221,15 +361,15 @@ export default function Chat() {
         const agent = extractAgentName(assistantMsg.content)
         if (agent) assistantMsg.agentName = agent
         assistantMsg.durationMs = Date.now() - startTime
-        setMessages([...history, { ...assistantMsg }])
+        setWebMessages([...history, { ...assistantMsg }])
       }
       assistantMsg.durationMs = Date.now() - startTime
-      setMessages([...history, { ...assistantMsg }])
+      setWebMessages([...history, { ...assistantMsg }])
     } catch (err) {
       if (!abort.signal.aborted) {
         assistantMsg.content += `\n\n[Error: ${err instanceof Error ? err.message : err}]`
         assistantMsg.durationMs = Date.now() - startTime
-        setMessages([...history, { ...assistantMsg }])
+        setWebMessages([...history, { ...assistantMsg }])
       }
     } finally {
       abortRef.current = null
@@ -238,34 +378,34 @@ export default function Chat() {
     }
   }
 
-  const stopStreaming = () => {
-    abortRef.current?.abort()
-  }
+  const stopStreaming = () => { abortRef.current?.abort() }
 
   const send = async () => {
+    if (!isWeb) return // channel conversations are read-only in web UI
     const text = input.trim()
     if (!text || streaming) return
     const userMsg: Message = { role: 'user', content: text, timestamp: Date.now() }
-    const history = [...messages, userMsg]
-    setMessages(history)
+    const history = [...webMessages, userMsg]
+    setWebMessages(history)
     setInput('')
     await sendWithHistory(history)
   }
 
   const handleEdit = async (idx: number) => {
+    if (!isWeb) return
     const text = editText.trim()
     if (!text || streaming) return
-    const before = messages.slice(0, idx)
+    const before = webMessages.slice(0, idx)
     const editedMsg: Message = { role: 'user', content: text, timestamp: Date.now() }
     const history = [...before, editedMsg]
-    setMessages(history)
+    setWebMessages(history)
     setEditingIdx(null)
     setEditText('')
     await sendWithHistory(history)
   }
 
   const startEdit = (idx: number) => {
-    if (streaming || messages[idx]?.role !== 'user') return
+    if (!isWeb || streaming || messages[idx]?.role !== 'user') return
     setEditingIdx(idx)
     setEditText(messages[idx].content)
   }
@@ -282,10 +422,12 @@ export default function Chat() {
   }
 
   const isStreamingLast = (i: number, msg: Message) =>
-    msg.role === 'assistant' && streaming && i === messages.length - 1
+    isWeb && msg.role === 'assistant' && streaming && i === messages.length - 1
+
+  const activeConvInfo = conversations.find(c => c.id === activeConv)
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full">
       <style>{`
         @keyframes breathing {
           0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); border-color: #334155; }
@@ -293,81 +435,122 @@ export default function Chat() {
         }
         .bubble-breathing { animation: breathing 2s ease-in-out infinite; }
       `}</style>
-      <div className="shrink-0 px-6 py-3 border-b border-[#334155] flex items-center justify-between bg-[#1e293b]">
-        <div className="flex items-center gap-3">
-          <h2 className="text-sm font-bold">创世 Agent</h2>
-          <span className="text-xs text-[#94a3b8]">Genesis — 平台内核调度</span>
-        </div>
-        <button
-          onClick={() => { setMessages([]); localStorage.removeItem(CHAT_STORAGE_KEY); setEditingIdx(null) }}
-          className="text-xs text-[#64748b] hover:text-[#94a3b8] px-2 py-1"
-        >清空</button>
-      </div>
 
-      <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center text-[#475569]">
-              <p className="text-4xl mb-3">◈</p>
-              <p className="text-sm">与创世 Agent 对话</p>
-              <p className="text-xs mt-2 text-[#64748b]">Genesis 会自动将请求路由到最合适的 Worker Agent</p>
-            </div>
-          </div>
-        )}
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            {msg.role === 'user' && editingIdx === i ? (
-              <div className="max-w-[75%] w-full">
-                <textarea ref={editRef} value={editText} onChange={(e) => setEditText(e.target.value)}
-                  onKeyDown={(e) => handleEditKeyDown(e, i)} rows={3}
-                  className="w-full bg-[#0f172a] border border-[#3b82f6] rounded-lg px-4 py-2.5 text-sm outline-none resize-none" />
-                <div className="flex gap-2 mt-1 justify-end">
-                  <button onClick={cancelEdit} className="text-xs text-[#64748b] hover:text-[#94a3b8] px-2 py-1">取消</button>
-                  <button onClick={() => handleEdit(i)} disabled={!editText.trim()}
-                    className="text-xs bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 px-3 py-1 rounded transition-colors">重新发送</button>
-                </div>
-              </div>
-            ) : (
-              <div className="max-w-[75%]">
-                <div
-                  onDoubleClick={() => startEdit(i)}
-                  className={`rounded-lg px-4 py-2.5 text-sm ${
-                    msg.role === 'user'
-                      ? 'bg-[#3b82f6] text-white cursor-pointer hover:bg-[#2563eb] transition-colors'
-                      : `bg-[#1e293b] border border-[#334155] text-[#f1f5f9]${isStreamingLast(i, msg) ? ' bubble-breathing' : ''}`
-                  }`}
-                  title={msg.role === 'user' ? '双击编辑' : undefined}
-                >
-                  <MessageContent content={msg.content} />
-                </div>
-                <div className={`flex items-center gap-2 mt-1 text-[10px] text-[#475569] ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  {msg.role === 'assistant' && msg.agentName && (
-                    <span className="text-[#3b82f6]">◈ {msg.agentName}</span>
-                  )}
-                  <span>{formatTime(msg.timestamp)}</span>
-                  {msg.role === 'assistant' && msg.durationMs != null && msg.durationMs > 0 && (
-                    <span>· {msg.durationMs >= 1000 ? `${(msg.durationMs / 1000).toFixed(1)}s` : `${msg.durationMs}ms`}</span>
-                  )}
-                  {msg.tokens != null && msg.tokens > 0 && <span>· {msg.tokens} tokens</span>}
-                </div>
-              </div>
+      {sidebarOpen && (
+        <ConversationList
+          conversations={conversations}
+          activeId={activeConv}
+          onSelect={(id) => { setActiveConv(id); setEditingIdx(null) }}
+        />
+      )}
+
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <div className="shrink-0 px-4 py-3 border-b border-[#334155] flex items-center justify-between bg-[#1e293b]">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="text-[#64748b] hover:text-[#94a3b8] text-sm px-1"
+              title={sidebarOpen ? '收起会话列表' : '展开会话列表'}
+            >
+              {sidebarOpen ? '◀' : '▶'}
+            </button>
+            <span className="text-sm">{CHANNEL_ICONS[activeConvInfo?.channelType || 'web']}</span>
+            <h2 className="text-sm font-bold">{activeConvInfo?.label || '对话'}</h2>
+            {isWeb && <span className="text-xs text-[#94a3b8]">Genesis — 平台内核调度</span>}
+            {!isWeb && activeConvInfo?.channelName && (
+              <span className="text-xs text-[#94a3b8]">来自 {activeConvInfo.channelName} 渠道</span>
             )}
           </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
+          <div className="flex items-center gap-2">
+            {!isWeb && (
+              <span className="text-[10px] px-2 py-0.5 rounded bg-[#334155] text-[#94a3b8]">只读</span>
+            )}
+            {isWeb && (
+              <button
+                onClick={() => { setWebMessages([]); localStorage.removeItem(CHAT_STORAGE_KEY); setEditingIdx(null) }}
+                className="text-xs text-[#64748b] hover:text-[#94a3b8] px-2 py-1"
+              >清空</button>
+            )}
+          </div>
+        </div>
 
-      <div className="shrink-0 px-6 py-3 border-t border-[#334155] bg-[#1e293b]">
-        <div className="flex gap-2 items-end">
-          <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown} placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
-            disabled={streaming} rows={1}
-            className="flex-1 bg-[#0f172a] border border-[#475569] rounded-lg px-4 py-2.5 text-sm focus:border-[#3b82f6] outline-none resize-none disabled:opacity-40 max-h-32"
-            style={{ minHeight: '42px' }} />
-          <button onClick={streaming ? stopStreaming : send} disabled={!streaming && !input.trim()}
-            className={`px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0 ${streaming ? 'bg-red-500 hover:bg-red-600' : 'bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40'}`}>
-            {streaming ? '停止' : '发送'}
-          </button>
+        {/* Messages */}
+        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+          {messages.length === 0 && (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center text-[#475569]">
+                <p className="text-4xl mb-3">{isWeb ? '◈' : CHANNEL_ICONS[activeConvInfo?.channelType || 'web']}</p>
+                <p className="text-sm">{isWeb ? '与创世 Agent 对话' : '渠道对话记录'}</p>
+                <p className="text-xs mt-2 text-[#64748b]">
+                  {isWeb ? 'Genesis 会自动将请求路由到最合适的 Worker Agent' : '此会话来自外部渠道，仅供查看'}
+                </p>
+              </div>
+            </div>
+          )}
+          {messages.map((msg, i) => (
+            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {msg.role === 'user' && isWeb && editingIdx === i ? (
+                <div className="max-w-[75%] w-full">
+                  <textarea ref={editRef} value={editText} onChange={(e) => setEditText(e.target.value)}
+                    onKeyDown={(e) => handleEditKeyDown(e, i)} rows={3}
+                    className="w-full bg-[#0f172a] border border-[#3b82f6] rounded-lg px-4 py-2.5 text-sm outline-none resize-none" />
+                  <div className="flex gap-2 mt-1 justify-end">
+                    <button onClick={cancelEdit} className="text-xs text-[#64748b] hover:text-[#94a3b8] px-2 py-1">取消</button>
+                    <button onClick={() => handleEdit(i)} disabled={!editText.trim()}
+                      className="text-xs bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40 px-3 py-1 rounded transition-colors">重新发送</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="max-w-[75%]">
+                  <div
+                    onDoubleClick={() => startEdit(i)}
+                    className={`rounded-lg px-4 py-2.5 text-sm ${
+                      msg.role === 'user'
+                        ? `bg-[#3b82f6] text-white ${isWeb ? 'cursor-pointer hover:bg-[#2563eb]' : ''} transition-colors`
+                        : `bg-[#1e293b] border border-[#334155] text-[#f1f5f9]${isStreamingLast(i, msg) ? ' bubble-breathing' : ''}`
+                    }`}
+                    title={msg.role === 'user' && isWeb ? '双击编辑' : undefined}
+                  >
+                    <MessageContent content={msg.content} />
+                  </div>
+                  <div className={`flex items-center gap-2 mt-1 text-[10px] text-[#475569] flex-wrap ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    {msg.channelSource && <ChannelBadge source={msg.channelSource} />}
+                    {msg.role === 'assistant' && msg.agentName && (
+                      <span className="text-[#3b82f6]">◈ {msg.agentName}</span>
+                    )}
+                    <span>{formatTime(msg.timestamp)}</span>
+                    {msg.role === 'assistant' && msg.durationMs != null && msg.durationMs > 0 && (
+                      <span>· {msg.durationMs >= 1000 ? `${(msg.durationMs / 1000).toFixed(1)}s` : `${msg.durationMs}ms`}</span>
+                    )}
+                    {msg.tokens != null && msg.tokens > 0 && <span>· {msg.tokens} tokens</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input */}
+        <div className="shrink-0 px-6 py-3 border-t border-[#334155] bg-[#1e293b]">
+          {isWeb ? (
+            <div className="flex gap-2 items-end">
+              <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown} placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
+                disabled={streaming} rows={1}
+                className="flex-1 bg-[#0f172a] border border-[#475569] rounded-lg px-4 py-2.5 text-sm focus:border-[#3b82f6] outline-none resize-none disabled:opacity-40 max-h-32"
+                style={{ minHeight: '42px' }} />
+              <button onClick={streaming ? stopStreaming : send} disabled={!streaming && !input.trim()}
+                className={`px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0 ${streaming ? 'bg-red-500 hover:bg-red-600' : 'bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40'}`}>
+                {streaming ? '停止' : '发送'}
+              </button>
+            </div>
+          ) : (
+            <div className="text-center text-xs text-[#475569] py-1">
+              渠道会话为只读模式 · 消息通过 {activeConvInfo?.channelName || '外部渠道'} 收发
+            </div>
+          )}
         </div>
       </div>
     </div>

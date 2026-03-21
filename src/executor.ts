@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { getModel } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
@@ -51,12 +50,81 @@ function getApiKey(model: ModelConfig): string {
   return key
 }
 
-function toAnthropicTools(tools: ToolDef[]): Anthropic.Tool[] {
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
-  }))
+// ─── XML Tool Protocol (works through proxy that strips native tools) ───
+
+function buildToolSystemPrompt(baseSystem: string, tools: ToolDef[]): string {
+  if (tools.length === 0) return baseSystem
+
+  const toolDescs = tools.map(t => {
+    const params = JSON.stringify(t.inputSchema)
+    return `<tool name="${t.name}">\n<description>${t.description}</description>\n<parameters>${params}</parameters>\n</tool>`
+  }).join('\n')
+
+  return `${baseSystem}
+
+<available_tools>
+${toolDescs}
+</available_tools>
+
+To use a tool, output exactly this format:
+<tool_call>{"name": "tool_name", "arguments": {...}}</tool_call>
+
+You may output multiple <tool_call> blocks in one response. After execution, results appear in <tool_result> tags. Do not explain or narrate tool calls — just output the <tool_call> block directly.`
+}
+
+function parseToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
+  const regex = /<tool_call>([\s\S]*?)<\/tool_call>/g
+  const calls: { name: string; arguments: Record<string, unknown> }[] = []
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim())
+      calls.push({ name: parsed.name, arguments: parsed.arguments ?? {} })
+    } catch { /* skip malformed */ }
+  }
+  return calls
+}
+
+function stripToolCallTags(text: string): string {
+  return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
+}
+
+async function rawAnthropicRequest(
+  model: ModelConfig, system: string, messages: any[], maxTokens: number, temperature?: number,
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const apiKey = getApiKey(model)
+  const baseUrl = model.config.baseUrl || 'https://api.anthropic.com'
+
+  const body: any = {
+    model: model.name,
+    max_tokens: maxTokens,
+    system,
+    messages,
+  }
+  if (temperature != null) body.temperature = temperature
+
+  const res = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Anthropic API error ${res.status}: ${err}`)
+  }
+
+  const data = await res.json() as any
+  const text = (data.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+  return {
+    text,
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  }
 }
 
 function toOpenAITools(tools: ToolDef[]): OpenAI.ChatCompletionTool[] {
@@ -84,53 +152,45 @@ export async function executeTask(agentId: string, userPrompt: string, onSpan?: 
 async function callAnthropicWithTools(
   model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], onSpan?: SpanEmitter,
 ): Promise<ChatResponse> {
-  const client = new Anthropic({
-    apiKey: getApiKey(model),
-    ...(model.config.baseUrl ? { baseURL: model.config.baseUrl } : {}),
-  })
   const params = model.config.defaultParams ?? {}
+  const maxTokens = (params.max_tokens as number) ?? 4096
+  const temperature = params.temperature as number | undefined
+  const fullSystem = buildToolSystemPrompt(system, tools)
   const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role, content: m.content }))
   let totalTokens = 0
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const llmStart = Date.now()
-    const response = await client.messages.create({
-      model: model.name,
-      max_tokens: (params.max_tokens as number) ?? 4096,
-      system,
-      messages: anthropicMsgs,
-      ...(tools.length > 0 ? { tools: toAnthropicTools(tools) } : {}),
-      ...(params.temperature != null ? { temperature: params.temperature as number } : {}),
-    })
-
-    const roundTokens = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0)
+    const result = await rawAnthropicRequest(model, fullSystem, anthropicMsgs, maxTokens, temperature)
+    const roundTokens = result.inputTokens + result.outputTokens
     totalTokens += roundTokens
 
-    const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('')
-    onSpan?.({ type: 'llm', name: model.name, input: messages[messages.length - 1]?.content?.slice(0, 300), output: text.slice(0, 500), tokens: roundTokens, durationMs: Date.now() - llmStart, status: 'success' })
+    const toolCalls = parseToolCalls(result.text)
+    const cleanText = stripToolCallTags(result.text)
 
-    if (response.stop_reason !== 'tool_use') {
-      return { content: text, tokensUsed: totalTokens }
+    onSpan?.({ type: 'llm', name: model.name, input: messages[messages.length - 1]?.content?.slice(0, 300), output: cleanText.slice(0, 500), tokens: roundTokens, durationMs: Date.now() - llmStart, status: 'success' })
+
+    if (toolCalls.length === 0) {
+      return { content: cleanText, tokensUsed: totalTokens }
     }
 
     // Process tool calls
-    const toolResults: any[] = []
-    for (const block of response.content) {
-      if (block.type !== 'tool_use') continue
+    const toolResultTexts: string[] = []
+    for (const tc of toolCalls) {
       const toolStart = Date.now()
-      const mcpId = findToolMcp(tools, block.name)
+      const mcpId = findToolMcp(tools, tc.name)
       if (!mcpId) {
-        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Tool not found: ${block.name}`, is_error: true })
-        onSpan?.({ type: 'tool', name: block.name, input: JSON.stringify(block.input).slice(0, 300), output: 'Tool not found', durationMs: Date.now() - toolStart, status: 'error' })
+        toolResultTexts.push(`<tool_result name="${tc.name}" error="true">Tool not found: ${tc.name}</tool_result>`)
+        onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: 'Tool not found', durationMs: Date.now() - toolStart, status: 'error' })
         continue
       }
-      const result = await callTool(mcpId, block.name, block.input as Record<string, unknown>)
-      onSpan?.({ type: 'tool', name: block.name, input: JSON.stringify(block.input).slice(0, 300), output: result.content.slice(0, 500), durationMs: Date.now() - toolStart, status: result.isError ? 'error' : 'success' })
-      toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.content, ...(result.isError ? { is_error: true } : {}) })
+      const callResult = await callTool(mcpId, tc.name, tc.arguments)
+      onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: callResult.content.slice(0, 500), durationMs: Date.now() - toolStart, status: callResult.isError ? 'error' : 'success' })
+      toolResultTexts.push(`<tool_result name="${tc.name}"${callResult.isError ? ' error="true"' : ''}>${callResult.content}</tool_result>`)
     }
 
-    anthropicMsgs.push({ role: 'assistant', content: response.content })
-    anthropicMsgs.push({ role: 'user', content: toolResults })
+    anthropicMsgs.push({ role: 'assistant', content: result.text })
+    anthropicMsgs.push({ role: 'user', content: toolResultTexts.join('\n') })
   }
 
   return { content: '[达到最大工具调用轮次]', tokensUsed: totalTokens }
@@ -214,106 +274,49 @@ async function* streamAnthropicWithTools(
   model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
 ): AsyncGenerator<string> {
   const params = model.config.defaultParams ?? {}
+  const maxTokens = (params.max_tokens as number) ?? 4096
+  const temperature = params.temperature as number | undefined
+  const fullSystem = buildToolSystemPrompt(system, tools)
   const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
   let totalTokens = 0
-  const baseUrl = (model.config.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '')
-  const apiKey = getApiKey(model)
-
-  // ── Build tool descriptions into system prompt (proxy strips native tool_use) ──
-  const toolDesc = tools.map((t) => {
-    const schema = t.inputSchema as any
-    const props = schema?.properties
-      ? Object.entries(schema.properties).map(([k, v]: [string, any]) => `    ${k}: ${v.type}${v.description ? ' — ' + v.description : ''}`).join('\n')
-      : '    (无参数)'
-    const required = schema?.required?.length ? `  必填: ${schema.required.join(', ')}` : ''
-    return `- ${t.name}: ${t.description || ''}\n  参数:\n${props}${required ? '\n' + required : ''}`
-  }).join('\n')
-
-  const toolSystemPrompt = [
-    system,
-    '',
-    '═══ 工具调用协议 ═══',
-    '你拥有以下工具。当需要调用工具时，必须严格使用以下 XML 格式输出（可一次调用多个）：',
-    '',
-    '<tool_call>',
-    '{"name": "工具名", "input": {"参数名": "值"}}',
-    '</tool_call>',
-    '',
-    '规则：',
-    '- 每个工具调用必须是独立的 <tool_call>...</tool_call> 块',
-    '- input 必须是合法 JSON',
-    '- 调用工具前可以输出思考文本',
-    '- 输出工具调用后立即停止，等待结果',
-    '',
-    '可用工具：',
-    toolDesc,
-  ].join('\n')
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    let data: any
+    let result
     try {
-      const res = await fetch(`${baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: model.name,
-          max_tokens: (params.max_tokens as number) ?? 4096,
-          system: toolSystemPrompt,
-          messages: anthropicMsgs,
-          ...(params.temperature != null ? { temperature: params.temperature as number } : {}),
-        }),
-      })
-      data = await res.json()
-      if (!res.ok) {
-        yield `\n\n[Error: ${data?.error?.message || res.statusText}]`
-        break
-      }
+      result = await rawAnthropicRequest(model, fullSystem, anthropicMsgs, maxTokens, temperature)
     } catch (err) {
       yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
       break
     }
 
-    const content: any[] = data.content || []
-    const text = content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
-    const roundTokens = (data.usage?.input_tokens ?? 0) + (data.usage?.output_tokens ?? 0)
-    totalTokens += roundTokens
-    console.log(`[stream-anthropic] round=${round} text-length=${text.length}`)
+    totalTokens += result.inputTokens + result.outputTokens
 
-    // ── Parse <tool_call> blocks from text ──
-    const toolCallRegex = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g
-    const toolCalls: { name: string; input: Record<string, unknown> }[] = []
-    let m
-    while ((m = toolCallRegex.exec(text)) !== null) {
-      try { toolCalls.push(JSON.parse(m[1])) } catch { /* skip malformed */ }
-    }
+    const toolCalls = parseToolCalls(result.text)
+    const cleanText = stripToolCallTags(result.text)
 
-    // ── Yield text without <tool_call> blocks ──
-    const cleanText = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
-    if (cleanText) yield cleanText
+    console.log(`[stream-anthropic] round=${round} text=${cleanText.length}chars tools=${toolCalls.length}`)
 
+    // If no tool calls, yield text and done
     if (toolCalls.length === 0) {
-      console.log(`[stream-anthropic] no tool calls found, done`)
+      if (cleanText) yield cleanText
       break
     }
 
-    console.log(`[stream-anthropic] found ${toolCalls.length} tool call(s): ${toolCalls.map(tc => tc.name).join(', ')}`)
+    // Has tool calls — suppress narration text (model shouldn't talk while calling tools)
+    const hasDispatch = toolCalls.some(tc => tc.name === 'dispatch_to_agent')
 
-    // ── Execute tools ──
-    const resultParts: string[] = []
+    // Execute tools
+    const toolResultTexts: string[] = []
     for (const tc of toolCalls) {
       yield `[TOOL_CALL:${tc.name}]`
 
       // Special handling: dispatch_to_agent streams worker output in real-time
       if (tc.name === 'dispatch_to_agent') {
-        const targetId = (tc.input as any)?.agentId as string
-        const prompt = (tc.input as any)?.prompt as string
+        const targetId = tc.arguments.agentId as string
+        const prompt = tc.arguments.prompt as string
         if (!targetId || !prompt) {
           yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
-          resultParts.push(`[${tc.name}] Error: 缺少 agentId 或 prompt`)
+          toolResultTexts.push(`<tool_result name="${tc.name}" error="true">缺少 agentId 或 prompt</tool_result>`)
           continue
         }
         const targetAgent = getAgent(targetId)
@@ -323,19 +326,16 @@ async function* streamAnthropicWithTools(
         let workerOutput = ''
         try {
           for await (const chunk of streamTask(targetId, [{ role: 'user' as const, content: prompt }])) {
-            // Forward tool markers from worker so UI can show worker's tool usage
             if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
                 chunk.startsWith('[FILE_OUTPUT:')) {
               yield chunk
               continue
             }
-            // Skip meta markers
             if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
                 chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
-            const clean = chunk.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-            if (clean) {
-              workerOutput += clean
-              yield clean
+            if (chunk) {
+              workerOutput += chunk
+              yield chunk
             }
           }
         } catch (err) {
@@ -347,32 +347,39 @@ async function* streamAnthropicWithTools(
 
         const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
         yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
-        resultParts.push(`[${agentName} 的回复]\n${workerOutput.trim() || '(无回复)'}`)
+        toolResultTexts.push(`<tool_result name="${tc.name}">${workerOutput.trim() || '(无回复)'}</tool_result>`)
         continue
       }
 
       const mcpId = findToolMcp(tools, tc.name)
       if (!mcpId) {
-        resultParts.push(`[${tc.name}] Error: 工具未找到`)
+        yield `[TOOL_RESULT:${tc.name}|Error: 工具未找到]`
+        toolResultTexts.push(`<tool_result name="${tc.name}" error="true">Tool not found: ${tc.name}</tool_result>`)
         continue
       }
       try {
-        const result = await callTool(mcpId, tc.name, tc.input || {})
-        if (tc.name === 'write_file' && (tc.input as any)?.path && !result.isError) {
-          yield `[FILE_OUTPUT:${(tc.input as any).path}]`
+        const callResult = await callTool(mcpId, tc.name, tc.arguments)
+        if (tc.name === 'write_file' && tc.arguments.path && !callResult.isError) {
+          yield `[FILE_OUTPUT:${tc.arguments.path}]`
         }
-        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(result.content)}]`
-        resultParts.push(`[${tc.name}] ${result.isError ? 'Error: ' : ''}${result.content}`)
+        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(callResult.content)}]`
+        toolResultTexts.push(`<tool_result name="${tc.name}"${callResult.isError ? ' error="true"' : ''}>${callResult.content}</tool_result>`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         yield `[TOOL_RESULT:${tc.name}|Error: ${errMsg}]`
-        resultParts.push(`[${tc.name}] Error: ${errMsg}`)
+        toolResultTexts.push(`<tool_result name="${tc.name}" error="true">Error: ${errMsg}</tool_result>`)
       }
     }
 
-    // ── Feed results back as text messages ──
-    anthropicMsgs.push({ role: 'assistant', content: text })
-    anthropicMsgs.push({ role: 'user', content: `工具执行结果：\n\n${resultParts.join('\n\n')}` })
+    // Dispatch completed — break loop, don't let Genesis summarize
+    if (hasDispatch) {
+      console.log(`[stream-anthropic] dispatch completed, breaking loop`)
+      break
+    }
+
+    // Feed tool results back as XML
+    anthropicMsgs.push({ role: 'assistant', content: result.text })
+    anthropicMsgs.push({ role: 'user', content: toolResultTexts.join('\n') })
   }
   if (totalTokens > 0) yield `[STREAM_META:tokens=${totalTokens}]`
 }

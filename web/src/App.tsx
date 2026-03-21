@@ -19,17 +19,18 @@ export default function App() {
 
   return (
     <Layout currentPage={page} onNavigate={setPage}>
+      {/* Chat stays mounted for persistent state; others remount on navigate for fresh data */}
       <div className={`h-full ${page === 'chat' ? '' : 'hidden'}`}><Chat /></div>
-      <div className={`h-full ${page === 'dashboard' ? '' : 'hidden'}`}><Dashboard /></div>
-      <div className={`h-full ${page === 'models' ? '' : 'hidden'}`}><Models /></div>
-      <div className={`h-full ${page === 'skills' ? '' : 'hidden'}`}><Skills /></div>
-      <div className={`h-full ${page === 'mcps' ? '' : 'hidden'}`}><Mcps /></div>
-      <div className={`h-full ${page === 'agents' ? '' : 'hidden'}`}><Agents /></div>
-      <div className={`h-full ${page === 'tasks' ? '' : 'hidden'}`}><Tasks /></div>
-      <div className={`h-full ${page === 'graphs' ? '' : 'hidden'}`}><Graphs /></div>
-      <div className={`h-full ${page === 'clawhub' ? '' : 'hidden'}`}><ClawHub /></div>
-      <div className={`h-full ${page === 'cron' ? '' : 'hidden'}`}><Cron /></div>
-      <div className={`h-full ${page === 'channels' ? '' : 'hidden'}`}><Channels /></div>
+      {page === 'dashboard' && <Dashboard />}
+      {page === 'models' && <Models />}
+      {page === 'skills' && <Skills />}
+      {page === 'mcps' && <Mcps />}
+      {page === 'agents' && <Agents />}
+      {page === 'tasks' && <Tasks />}
+      {page === 'graphs' && <Graphs />}
+      {page === 'clawhub' && <ClawHub />}
+      {page === 'cron' && <Cron />}
+      {page === 'channels' && <Channels />}
     </Layout>
   )
 }

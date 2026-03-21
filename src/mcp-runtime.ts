@@ -288,7 +288,7 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
   shell: {
     tools: [{
       name: 'run_shell_command',
-      description: '在系统 shell 中执行命令（zsh），可用于系统控制、安装软件、运行脚本等',
+      description: '在 macOS 系统 shell 中执行命令（zsh）。注意：macOS 的 grep 不支持 -P，请用 grep -E；sed 不支持换行替换，请用 perl 或 awk 代替',
       inputSchema: {
         type: 'object',
         properties: {

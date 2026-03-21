@@ -95,6 +95,15 @@ export const api = {
   scanLocalMcps: () => request<any>('/local-mcps'),
   importLocalMcp: (data: any) => request<any>('/local-mcps/import', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Channel messages
+  getChannelConversations: () => request<any[]>('/channel-conversations'),
+  getChannelMessages: (conversationId?: string, limit = 50) => {
+    const params = new URLSearchParams()
+    if (conversationId) params.set('conversationId', conversationId)
+    params.set('limit', String(limit))
+    return request<any[]>(`/channel-messages?${params}`)
+  },
+
   // Chat (streaming) — always routes through Genesis Agent
   chat: async function* (messages: { role: string; content: string }[], signal?: AbortSignal): AsyncGenerator<string> {
     const res = await fetch(`${BASE}/chat`, {

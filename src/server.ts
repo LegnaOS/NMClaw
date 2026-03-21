@@ -40,7 +40,7 @@ import { loadStore, updateStore } from './store.js'
 import { seedDefaults } from './seed.js'
 import { warmupStdioMcps } from './mcp-runtime.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
-import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing } from './channels/feishu.js'
+import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
 // Seed default models & agents on first run
@@ -575,6 +575,40 @@ app.post('/api/channels/:id/send', async (c) => {
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'send failed' }, 500)
   }
+})
+
+// Channel message log
+app.get('/api/channel-messages', (c) => {
+  const channelId = c.req.query('channelId')
+  const conversationId = c.req.query('conversationId')
+  const limit = parseInt(c.req.query('limit') ?? '50')
+  let msgs = getChannelMessages(channelId || undefined, limit)
+  if (conversationId) msgs = msgs.filter(m => m.conversationId === conversationId)
+  return c.json(msgs)
+})
+
+app.get('/api/channel-conversations', (c) => {
+  return c.json(getChannelConversations())
+})
+
+// SSE stream for real-time channel message updates
+app.get('/api/channel-messages/stream', (c) => {
+  return streamSSE(c, async (stream) => {
+    let alive = true
+    const unsub = subscribeChannelMessages(() => {
+      if (!alive) return
+      const recent = getChannelMessages(undefined, 1)
+      if (recent.length > 0) {
+        stream.writeSSE({ data: JSON.stringify(recent[recent.length - 1]) }).catch(() => { alive = false })
+      }
+    })
+    // Keep alive
+    while (alive) {
+      await stream.writeSSE({ data: '"ping"' })
+      await new Promise(r => setTimeout(r, 15000))
+    }
+    unsub()
+  })
 })
 
 // ═══════════════════════════════════
