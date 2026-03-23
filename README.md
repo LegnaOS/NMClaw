@@ -54,6 +54,8 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **飞书大文件传输** | ≤30MB IM 直传，>30MB 自动走云空间分片上传（4MB 分片）+ 上传后自动授权用户查看权限 |
 | **渠道上下文感知** | Agent 自动识别当前用户渠道（Web / 飞书），选择正确的文件发送工具 |
 | **模型直配 API Key** | 模型可直接配置 API Key，不再强制使用环境变量，支持每模型独立密钥 |
+| **Prompt Caching** | Anthropic 自动启用 prompt caching（system prompt + 对话前缀），多轮 tool loop 节省 ~90% input token；Deepseek 自动前缀缓存 |
+| **响应去重缓存** | 相同请求 5 分钟内命中内存缓存直接返回，跳过 API 调用，缓存统计暴露到 /api/status |
 | **Skill 导入** | 支持文件上传（zip / tar.gz / md）和 URL 链接导入 |
 | **MCP 导入** | JSON 批量导入 + 本地自动发现（Claude Desktop / Cursor 等） |
 | **ClawHub 商店** | 搜索安装 OpenClaw 生态技能 |

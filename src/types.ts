@@ -168,8 +168,10 @@ export interface ChatResponse {
 
 export interface GraphNode {
   id: string
-  agentId: string
+  type?: 'agent' | 'code'  // default 'agent' for backward compat
+  agentId?: string          // required for type='agent'
   label: string
+  code?: string             // JS code body for type='code'; input variable is upstream output, must return
 }
 
 export interface GraphEdge {

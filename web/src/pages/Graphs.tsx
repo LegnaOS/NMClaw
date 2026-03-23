@@ -33,7 +33,68 @@ const AgentNode = memo(({ data }: NodeProps<Node<AgentNodeData>>) => (
   </div>
 ))
 
-const nodeTypes = { agent: AgentNode }
+// ─── Custom Code Node ───
+
+type CodeNodeData = { label: string; code: string }
+
+const CodeNode = memo(({ data }: NodeProps<Node<CodeNodeData>>) => (
+  <div className="bg-[#1e293b] border-2 border-[#eab308] rounded-lg px-4 py-3 min-w-[140px] shadow-lg shadow-yellow-500/10">
+    <Handle type="target" position={Position.Top} className="!bg-[#eab308] !w-3 !h-3 !border-2 !border-[#0f172a]" />
+    <div className="text-xs font-bold text-[#fbbf24]">⚡ {data.label || 'Code'}</div>
+    <div className="text-[10px] text-[#94a3b8] mt-0.5 font-mono truncate max-w-[140px]">
+      {data.code ? data.code.split('\n')[0].slice(0, 30) : '(空)'}
+    </div>
+    <Handle type="source" position={Position.Bottom} className="!bg-[#eab308] !w-3 !h-3 !border-2 !border-[#0f172a]" />
+  </div>
+))
+
+const nodeTypes = { agent: AgentNode, code: CodeNode }
+
+// ─── Code Editor Modal ───
+
+function CodeEditorModal({ code, onSave, onClose }: { code: string; onSave: (c: string) => void; onClose: () => void }) {
+  const [val, setVal] = useState(code)
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-[#1e293b] border border-[#334155] rounded-lg w-[500px] p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-bold">编辑 Code 节点</h3>
+        <p className="text-[10px] text-[#64748b]">变量 input 为上游输出(string)，必须 return 结果</p>
+        <textarea value={val} onChange={(e) => setVal(e.target.value)} rows={10}
+          className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-2 text-xs font-mono focus:border-[#eab308] outline-none resize-none" />
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1 text-xs text-[#94a3b8] border border-[#475569] rounded hover:text-[#f1f5f9]">取消</button>
+          <button onClick={() => { onSave(val); onClose() }} className="px-3 py-1 text-xs bg-[#eab308] text-black rounded hover:bg-[#facc15]">保存</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Edge Condition Modal ───
+
+function EdgeConditionModal({ condition, onSave, onClose }: { condition: string; onSave: (c: string) => void; onClose: () => void }) {
+  const [val, setVal] = useState(condition)
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-[#1e293b] border border-[#334155] rounded-lg w-[400px] p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-bold">编辑连线条件</h3>
+        <div className="text-[10px] text-[#64748b] space-y-1">
+          <p>留空 = 无条件通过</p>
+          <p>js:expression — JS 表达式，变量 output</p>
+          <p>regex:/pattern/flags — 正则匹配</p>
+          <p>contains:关键词 — 包含匹配</p>
+          <p>else — 其他条件都不满足时激活</p>
+        </div>
+        <input value={val} onChange={(e) => setVal(e.target.value)} placeholder="例: js:output.includes('是')"
+          className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-xs font-mono focus:border-[#3b82f6] outline-none" />
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1 text-xs text-[#94a3b8] border border-[#475569] rounded hover:text-[#f1f5f9]">取消</button>
+          <button onClick={() => { onSave(val); onClose() }} className="px-3 py-1 text-xs bg-[#3b82f6] rounded hover:bg-[#2563eb]">保存</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ─── Graph Editor (inner, needs ReactFlowProvider) ───
 
@@ -45,12 +106,15 @@ function GraphEditor({ agents, onSave, initial }: {
   const [nodes, setNodes] = useState<Node[]>(() => {
     if (!initial?.nodes) return []
     return initial.nodes.map((n: any, i: number) => {
-      const agent = agents.find((a: any) => a.id === n.agentId)
+      const isCode = n.type === 'code'
+      const agent = !isCode ? agents.find((a: any) => a.id === n.agentId) : null
       return {
         id: n.id,
-        type: 'agent' as const,
+        type: isCode ? 'code' : 'agent',
         position: { x: 100 + (i % 3) * 200, y: 60 + Math.floor(i / 3) * 120 },
-        data: { label: n.label || agent?.name || '?', agentName: agent?.name || '?', agentId: n.agentId },
+        data: isCode
+          ? { label: n.label || 'Code', code: n.code || '' }
+          : { label: n.label || agent?.name || '?', agentName: agent?.name || '?', agentId: n.agentId },
       }
     })
   })
@@ -61,12 +125,19 @@ function GraphEditor({ agents, onSave, initial }: {
       source: e.from,
       target: e.to,
       animated: true,
-      style: { stroke: '#3b82f6' },
+      style: { stroke: e.condition ? '#eab308' : '#3b82f6' },
+      label: e.condition || undefined,
+      labelStyle: { fill: '#eab308', fontSize: 10 },
+      data: { condition: e.condition || '' },
     }))
   })
   const [name, setName] = useState(initial?.name ?? '')
   const [desc, setDesc] = useState(initial?.description ?? '')
   const { screenToFlowPosition } = useReactFlow()
+
+  // Modal state
+  const [editingCodeNodeId, setEditingCodeNodeId] = useState<string | null>(null)
+  const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null)
 
   const onNodesChange: OnNodesChange = useCallback(
     (changes) => setNodes((nds) => applyNodeChanges(changes, nds)), [],
@@ -75,7 +146,7 @@ function GraphEditor({ agents, onSave, initial }: {
     (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), [],
   )
   const onConnect: OnConnect = useCallback(
-    (conn) => setEdges((eds) => addEdge({ ...conn, animated: true, style: { stroke: '#3b82f6' } }, eds)), [],
+    (conn) => setEdges((eds) => addEdge({ ...conn, animated: true, style: { stroke: '#3b82f6' }, data: { condition: '' } }, eds)), [],
   )
 
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -86,12 +157,23 @@ function GraphEditor({ agents, onSave, initial }: {
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     const agentId = e.dataTransfer.getData('application/nmclaw-agent')
+    const isCodeDrop = e.dataTransfer.getData('application/nmclaw-code')
+    const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+    const id = `n_${Date.now()}`
+
+    if (isCodeDrop) {
+      setNodes((nds) => [...nds, {
+        id,
+        type: 'code',
+        position,
+        data: { label: 'Code', code: 'return input' },
+      }])
+      return
+    }
+
     if (!agentId) return
     const agent = agents.find((a: any) => a.id === agentId)
     if (!agent) return
-
-    const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
-    const id = `n_${Date.now()}`
     setNodes((nds) => [...nds, {
       id,
       type: 'agent',
@@ -100,19 +182,55 @@ function GraphEditor({ agents, onSave, initial }: {
     }])
   }, [agents, screenToFlowPosition])
 
+  const onNodeDoubleClick = useCallback((_: any, node: Node) => {
+    if (node.type === 'code') setEditingCodeNodeId(node.id)
+  }, [])
+
+  const onEdgeClick = useCallback((_: any, edge: Edge) => {
+    setEditingEdgeId(edge.id)
+  }, [])
+
+  const handleCodeSave = (code: string) => {
+    if (!editingCodeNodeId) return
+    setNodes((nds) => nds.map((n) =>
+      n.id === editingCodeNodeId ? { ...n, data: { ...n.data, code } } : n
+    ))
+  }
+
+  const handleConditionSave = (condition: string) => {
+    if (!editingEdgeId) return
+    setEdges((eds) => eds.map((e) =>
+      e.id === editingEdgeId ? {
+        ...e,
+        data: { ...e.data, condition },
+        label: condition || undefined,
+        labelStyle: { fill: '#eab308', fontSize: 10 },
+        style: { stroke: condition ? '#eab308' : '#3b82f6' },
+      } : e
+    ))
+  }
+
   const handleSave = () => {
     if (!name.trim() || nodes.length === 0) return
     onSave({
       name: name.trim(),
       description: desc.trim(),
-      nodes: nodes.map((n) => ({ id: n.id, agentId: (n.data as AgentNodeData).agentId, label: (n.data as AgentNodeData).label })),
-      edges: edges.map((e) => ({ from: e.source, to: e.target, condition: '' })),
+      nodes: nodes.map((n) => {
+        if (n.type === 'code') {
+          return { id: n.id, type: 'code', label: (n.data as CodeNodeData).label, code: (n.data as CodeNodeData).code }
+        }
+        return { id: n.id, type: 'agent', agentId: (n.data as AgentNodeData).agentId, label: (n.data as AgentNodeData).label }
+      }),
+      edges: edges.map((e) => ({ from: e.source, to: e.target, condition: (e.data as any)?.condition || '' })),
     })
     setNodes([])
     setEdges([])
     setName('')
     setDesc('')
   }
+
+  const editingCodeNode = editingCodeNodeId ? nodes.find((n) => n.id === editingCodeNodeId) : null
+  const editingEdge = editingEdgeId ? edges.find((e) => e.id === editingEdgeId) : null
 
   return (
     <div className="flex flex-col h-full">
@@ -129,9 +247,9 @@ function GraphEditor({ agents, onSave, initial }: {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Agent sidebar (drag source) */}
+        {/* Sidebar (drag source) */}
         <div className="w-40 shrink-0 border-r border-[#334155] bg-[#0f172a] p-2 overflow-auto">
-          <p className="text-[10px] text-[#64748b] uppercase tracking-wide mb-2">拖拽 Agent 到画布</p>
+          <p className="text-[10px] text-[#64748b] uppercase tracking-wide mb-2">Agent 节点</p>
           {agents.map((a: any) => (
             <div key={a.id} draggable
               onDragStart={(e) => {
@@ -144,6 +262,20 @@ function GraphEditor({ agents, onSave, initial }: {
             </div>
           ))}
           {agents.length === 0 && <p className="text-[10px] text-[#475569]">无可用 Agent</p>}
+
+          <p className="text-[10px] text-[#64748b] uppercase tracking-wide mt-3 mb-2">Code 节点</p>
+          <div draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('application/nmclaw-code', '1')
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            className="px-2 py-1.5 mb-1 bg-[#1e293b] border border-[#eab308]/50 rounded text-xs cursor-grab hover:border-[#eab308] transition-colors">
+            <div className="font-medium text-[#fbbf24]">⚡ Code</div>
+            <div className="text-[10px] text-[#64748b]">JS 转换节点</div>
+          </div>
+
+          <p className="text-[10px] text-[#475569] mt-3">双击 Code 节点编辑代码</p>
+          <p className="text-[10px] text-[#475569]">单击连线编辑条件</p>
         </div>
 
         {/* Canvas */}
@@ -157,6 +289,8 @@ function GraphEditor({ agents, onSave, initial }: {
             onConnect={onConnect}
             onDragOver={onDragOver}
             onDrop={onDrop}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onEdgeClick={onEdgeClick}
             fitView
             defaultEdgeOptions={{ animated: true, style: { stroke: '#3b82f6' } }}
             proOptions={{ hideAttribution: true }}
@@ -167,6 +301,24 @@ function GraphEditor({ agents, onSave, initial }: {
           </ReactFlow>
         </div>
       </div>
+
+      {/* Code Editor Modal */}
+      {editingCodeNode && (
+        <CodeEditorModal
+          code={(editingCodeNode.data as CodeNodeData).code || ''}
+          onSave={handleCodeSave}
+          onClose={() => setEditingCodeNodeId(null)}
+        />
+      )}
+
+      {/* Edge Condition Modal */}
+      {editingEdge && (
+        <EdgeConditionModal
+          condition={(editingEdge.data as any)?.condition || ''}
+          onSave={handleConditionSave}
+          onClose={() => setEditingEdgeId(null)}
+        />
+      )}
     </div>
   )
 }
@@ -176,12 +328,15 @@ function GraphEditor({ agents, onSave, initial }: {
 function GraphViewer({ graph, agents }: { graph: any; agents: any[] }) {
   const viewNodes: Node[] = useMemo(() =>
     (graph.nodes ?? []).map((n: any, i: number) => {
-      const agent = agents.find((a: any) => a.id === n.agentId)
+      const isCode = n.type === 'code'
+      const agent = !isCode ? agents.find((a: any) => a.id === n.agentId) : null
       return {
         id: n.id,
-        type: 'agent',
+        type: isCode ? 'code' : 'agent',
         position: { x: 100 + (i % 3) * 200, y: 60 + Math.floor(i / 3) * 120 },
-        data: { label: n.label || agent?.name || '?', agentName: agent?.name || '?', agentId: n.agentId },
+        data: isCode
+          ? { label: n.label || 'Code', code: n.code || '' }
+          : { label: n.label || agent?.name || '?', agentName: agent?.name || '?', agentId: n.agentId },
       }
     }), [graph, agents])
 
@@ -191,7 +346,7 @@ function GraphViewer({ graph, agents }: { graph: any; agents: any[] }) {
       source: e.from,
       target: e.to,
       animated: true,
-      style: { stroke: '#3b82f6' },
+      style: { stroke: e.condition ? '#eab308' : '#3b82f6' },
       label: e.condition || undefined,
       labelStyle: { fill: '#eab308', fontSize: 10 },
     })), [graph])

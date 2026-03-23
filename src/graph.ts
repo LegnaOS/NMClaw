@@ -60,11 +60,42 @@ function findStartNodes(graph: GraphConfig): string[] {
 
 function evaluateCondition(condition: string | undefined, output: string): boolean {
   if (!condition) return true
+  if (condition === 'else') return false // handled separately
+
+  // JS expression: js:output.length > 100
+  if (condition.startsWith('js:')) {
+    try {
+      return Boolean(new Function('output', `return (${condition.slice(3).trim()})`)(output))
+    } catch { return false }
+  }
+
+  // Regex: regex:/pattern/flags
+  if (condition.startsWith('regex:')) {
+    try {
+      const m = condition.slice(6).match(/^\/(.+)\/([gimsuy]*)$/)
+      return m ? new RegExp(m[1], m[2]).test(output) : false
+    } catch { return false }
+  }
+
+  // contains:keyword
   const lower = output.toLowerCase()
   if (condition.startsWith('contains:')) {
     return lower.includes(condition.slice(9).trim().toLowerCase())
   }
+
+  // Plain keyword match (backward compat)
   return lower.includes(condition.toLowerCase())
+}
+
+/** Execute a code node: runs JS with `input` variable, returns result as string */
+function executeCodeNode(code: string, input: string): string {
+  try {
+    const fn = new Function('input', code)
+    const result = fn(input)
+    return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+  } catch (err) {
+    return `[Code Error] ${err instanceof Error ? err.message : err}`
+  }
 }
 
 /** Build the prompt for a node based on its position in the DAG */
@@ -74,10 +105,8 @@ function buildNodeInput(
   results: Map<string, string>,
   nodeMap: Map<string, GraphNode>,
 ): string {
-  // Start node: just the original input
   if (inEdges.length === 0) return originalInput
 
-  // Collect upstream outputs with meaningful labels
   const upstreamParts = inEdges
     .map(e => {
       const label = nodeMap.get(e.from)?.label || e.from
@@ -88,13 +117,41 @@ function buildNodeInput(
 
   if (upstreamParts.length === 0) return originalInput
 
-  // Single upstream: output is the primary content
   if (upstreamParts.length === 1) {
     return `原始任务: ${originalInput}\n\n${upstreamParts[0]}\n\n请基于上游节点的输出继续处理。`
   }
 
-  // Multiple upstream (aggregation): clearly separate each source
   return `原始任务: ${originalInput}\n\n以下是多个上游节点的输出，请综合处理:\n\n${upstreamParts.join('\n\n---\n\n')}`
+}
+
+/** Determine which outgoing edges are activated after a node produces output */
+function activateEdges(
+  outEdges: GraphEdge[],
+  output: string,
+  activated: Set<string>,
+): void {
+  // Unconditional edges: always activate
+  for (const e of outEdges) {
+    if (!e.condition) activated.add(e.id)
+  }
+
+  // Conditional (non-else): evaluate
+  let anyConditionalMatched = false
+  for (const e of outEdges) {
+    if (e.condition && e.condition !== 'else') {
+      if (evaluateCondition(e.condition, output)) {
+        activated.add(e.id)
+        anyConditionalMatched = true
+      }
+    }
+  }
+
+  // else: activate only if no conditional edge matched
+  if (!anyConditionalMatched) {
+    for (const e of outEdges) {
+      if (e.condition === 'else') activated.add(e.id)
+    }
+  }
 }
 
 export async function executeGraph(
@@ -108,58 +165,64 @@ export async function executeGraph(
   const results = new Map<string, string>()
   const executed = new Set<string>()
   const failed = new Set<string>()
+  const activatedEdges = new Set<string>()
   const nodeMap = new Map(graph.nodes.map(n => [n.id, n]))
   const pending = new Set(graph.nodes.map(n => n.id))
 
   const startNodes = findStartNodes(graph)
   if (startNodes.length === 0) throw new Error('Graph has no start nodes (cycle detected?)')
 
-  // Wave-based execution: each iteration finds all ready nodes and runs them in parallel
   while (pending.size > 0) {
     const ready: string[] = []
     for (const nodeId of pending) {
       const inEdges = graph.edges.filter(e => e.to === nodeId)
-      // All predecessors must have finished (executed or failed)
       if (!inEdges.every(e => executed.has(e.from) || failed.has(e.from))) continue
-      // At least one incoming edge must pass its condition (or no incoming edges)
-      if (inEdges.length > 0) {
-        const anyPass = inEdges.some(e => {
-          const out = results.get(e.from)
-          return out !== undefined && evaluateCondition(e.condition, out)
-        })
-        if (!anyPass) { pending.delete(nodeId); continue } // condition blocked, skip permanently
+      // Start nodes (no incoming edges) are always ready; others need at least one activated edge
+      if (inEdges.length > 0 && !inEdges.some(e => activatedEdges.has(e.id))) {
+        // All predecessors done but no edge activated → skip permanently
+        if (inEdges.every(e => executed.has(e.from) || failed.has(e.from))) {
+          pending.delete(nodeId)
+        }
+        continue
       }
       ready.push(nodeId)
     }
 
-    if (ready.length === 0) break // no more nodes can run
+    if (ready.length === 0) break
 
-    // Execute all ready nodes in parallel
     await Promise.all(ready.map(async (nodeId) => {
       pending.delete(nodeId)
       const node = nodeMap.get(nodeId)
       if (!node) { executed.add(nodeId); return }
 
-      const agent = getAgent(node.agentId)
-      if (!agent) {
-        onEvent({ type: 'node_error', nodeId, nodeLabel: node.label, error: `Agent ${node.agentId} not found` })
-        failed.add(nodeId)
-        executed.add(nodeId)
-        return
-      }
-
       const inEdges = graph.edges.filter(e => e.to === nodeId)
       const nodeInput = buildNodeInput(input, inEdges, results, nodeMap)
+      const nodeType = node.type || 'agent'
 
       onEvent({ type: 'node_start', nodeId, nodeLabel: node.label, agentId: node.agentId })
 
       try {
-        const result = await executeTask(node.agentId, nodeInput)
-        results.set(nodeId, result.content)
+        let output: string
+        let tokensUsed: number | undefined
+
+        if (nodeType === 'code') {
+          output = executeCodeNode(node.code || 'return input', nodeInput)
+        } else {
+          if (!node.agentId) throw new Error('Agent node missing agentId')
+          const agent = getAgent(node.agentId)
+          if (!agent) throw new Error(`Agent ${node.agentId} not found`)
+          const result = await executeTask(node.agentId, nodeInput)
+          output = result.content
+          tokensUsed = result.tokensUsed
+        }
+
+        results.set(nodeId, output)
         executed.add(nodeId)
+        activateEdges(graph.edges.filter(e => e.from === nodeId), output, activatedEdges)
+
         onEvent({
           type: 'node_complete', nodeId, nodeLabel: node.label,
-          agentId: node.agentId, output: result.content, tokensUsed: result.tokensUsed,
+          agentId: node.agentId, output, tokensUsed,
         })
       } catch (err) {
         executed.add(nodeId)

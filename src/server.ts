@@ -32,7 +32,7 @@ import {
 } from './agent-manager.js'
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
-import { streamTask } from './executor.js'
+import { streamTask, getCacheStats } from './executor.js'
 import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './ext/clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
@@ -80,7 +80,8 @@ app.get('/api/status', (c) => {
   const status = getSystemStatus()
   const { bypass } = loadStore()
   const tasks = listTasks(5)
-  return c.json({ ...status, bypass, recentTasks: tasks })
+  const cache = getCacheStats()
+  return c.json({ ...status, bypass, recentTasks: tasks, cache })
 })
 
 // ═══════════════════════════════════

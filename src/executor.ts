@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { createHash } from 'node:crypto'
 import { getModel } from './model-registry.js'
 import { listSkills } from './skill-registry.js'
 import { getAgent, touchAgent } from './agent-manager.js'
@@ -10,6 +11,46 @@ import type { ToolDef } from './mcp-runtime.js'
 
 const MAX_TOOL_ROUNDS = 10
 const DISPATCH_CONTEXT_LIMIT = 4 // max recent messages to pass to worker (memory covers the rest)
+
+// ─── Response Dedup Cache ───
+// 完全相同的 (agentId + messages) 在短时间内命中缓存，跳过 API 调用
+const RESPONSE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+const RESPONSE_CACHE_MAX = 200
+
+interface CachedResponse {
+  response: ChatResponse
+  timestamp: number
+}
+
+const responseCache = new Map<string, CachedResponse>()
+
+function responseCacheKey(agentId: string, messages: ChatMessage[]): string {
+  const raw = agentId + '|' + JSON.stringify(messages.map(m => ({ r: m.role, c: m.content })))
+  return createHash('sha256').update(raw).digest('hex').slice(0, 24)
+}
+
+function getFromCache(key: string): ChatResponse | null {
+  const entry = responseCache.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.timestamp > RESPONSE_CACHE_TTL) {
+    responseCache.delete(key)
+    return null
+  }
+  return entry.response
+}
+
+function putToCache(key: string, response: ChatResponse): void {
+  // LRU eviction: 超过上限时删除最旧的条目
+  if (responseCache.size >= RESPONSE_CACHE_MAX) {
+    const oldest = responseCache.keys().next().value
+    if (oldest) responseCache.delete(oldest)
+  }
+  responseCache.set(key, { response, timestamp: Date.now() })
+}
+
+export function getCacheStats(): { size: number; maxSize: number; ttlMs: number } {
+  return { size: responseCache.size, maxSize: RESPONSE_CACHE_MAX, ttlMs: RESPONSE_CACHE_TTL }
+}
 
 export type SpanEmitter = (span: {
   type: 'llm' | 'tool' | 'chain'
@@ -94,17 +135,46 @@ function stripToolCallTags(text: string): string {
   return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
 }
 
+// ─── Anthropic Prompt Caching ───
+// cache_control: { type: "ephemeral" } 让 Anthropic 缓存 system prompt 和对话前缀
+// 多轮 tool loop 中，round 1+ 的 system prompt 命中缓存可节省 ~90% input token 费用
+// 缓存 TTL 5 分钟，每次命中自动续期
+
+function applyAnthropicCacheControl(system: string, messages: any[]): { systemBlocks: any[]; cachedMessages: any[] } {
+  // System prompt 始终标记缓存（含 skills + tool XML，通常 >1024 tokens）
+  const systemBlocks = [
+    { type: 'text', text: system, cache_control: { type: 'ephemeral' } }
+  ]
+
+  // 多轮对话：在倒数第二条消息上标记缓存断点，让前缀命中缓存
+  // Round 0: [user] — 不需要前缀缓存
+  // Round 1+: [user, assistant, tool_results, ...] — 缓存到倒数第二条
+  const cachedMessages = messages.map((m: any, i: number) => {
+    if (messages.length >= 3 && i === messages.length - 2) {
+      const content = typeof m.content === 'string'
+        ? [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }]
+        : m.content
+      return { ...m, content }
+    }
+    return m
+  })
+
+  return { systemBlocks, cachedMessages }
+}
+
 async function rawAnthropicRequest(
   model: ModelConfig, system: string, messages: any[], maxTokens: number, temperature?: number,
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }> {
   const apiKey = getApiKey(model)
   const baseUrl = model.config.baseUrl || 'https://api.anthropic.com'
+
+  const { systemBlocks, cachedMessages } = applyAnthropicCacheControl(system, messages)
 
   const body: any = {
     model: model.name,
     max_tokens: maxTokens,
-    system,
-    messages,
+    system: systemBlocks,
+    messages: cachedMessages,
   }
   if (temperature != null) body.temperature = temperature
 
@@ -114,6 +184,7 @@ async function rawAnthropicRequest(
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
     },
     body: JSON.stringify(body),
   })
@@ -125,10 +196,17 @@ async function rawAnthropicRequest(
 
   const data = await res.json() as any
   const text = (data.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
+  const cacheRead = data.usage?.cache_read_input_tokens ?? 0
+  const cacheWrite = data.usage?.cache_creation_input_tokens ?? 0
+  if (cacheRead > 0 || cacheWrite > 0) {
+    console.log(`[anthropic-cache] read=${cacheRead} write=${cacheWrite} input=${data.usage?.input_tokens ?? 0}`)
+  }
   return {
     text,
     inputTokens: data.usage?.input_tokens ?? 0,
     outputTokens: data.usage?.output_tokens ?? 0,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
   }
 }
 
@@ -144,14 +222,28 @@ function toOpenAITools(tools: ToolDef[]): OpenAI.ChatCompletionTool[] {
 // ═══════════════════════════════════
 
 export async function executeTask(agentId: string, userPrompt: string, onSpan?: SpanEmitter): Promise<ChatResponse> {
-  const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
-  const tools = await getToolsForAgent(agent.mcpIds)
   const messages: ChatMessage[] = [{ role: 'user', content: userPrompt }]
 
-  if (model.provider === 'anthropic') {
-    return callAnthropicWithTools(model, systemPrompt, messages, tools, onSpan)
+  // 响应去重缓存：完全相同的请求直接返回
+  const cacheKey = responseCacheKey(agentId, messages)
+  const cached = getFromCache(cacheKey)
+  if (cached) {
+    console.log(`[response-cache] hit for agent=${agentId} key=${cacheKey}`)
+    return { ...cached, tokensUsed: 0 }
   }
-  return callOpenAIWithTools(model, systemPrompt, messages, tools, onSpan)
+
+  const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
+  const tools = await getToolsForAgent(agent.mcpIds)
+
+  const result = model.provider === 'anthropic'
+    ? await callAnthropicWithTools(model, systemPrompt, messages, tools, onSpan)
+    : await callOpenAIWithTools(model, systemPrompt, messages, tools, onSpan)
+
+  // 只缓存成功的、非截断的响应
+  if (result.content && !result.content.startsWith('[达到最大工具调用轮次]')) {
+    putToCache(cacheKey, result)
+  }
+  return result
 }
 
 async function callAnthropicWithTools(
