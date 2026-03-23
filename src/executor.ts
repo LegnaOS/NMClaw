@@ -4,10 +4,12 @@ import { listSkills } from './skill-registry.js'
 import { getAgent, touchAgent } from './agent-manager.js'
 import { getAllTools, getToolsForAgent, callTool, findToolMcp } from './mcp-runtime.js'
 import { augmentMessageWithLinks } from './link-understanding.js'
+import { loadMemoryContext, saveTurn } from './memory.js'
 import type { ChatMessage, ChatResponse, ModelConfig } from './types.js'
 import type { ToolDef } from './mcp-runtime.js'
 
 const MAX_TOOL_ROUNDS = 10
+const DISPATCH_CONTEXT_LIMIT = 4 // max recent messages to pass to worker (memory covers the rest)
 
 export type SpanEmitter = (span: {
   type: 'llm' | 'tool' | 'chain'
@@ -241,16 +243,19 @@ async function callOpenAIWithTools(
     openaiMsgs.push(choice.message)
     for (const tc of choice.message.tool_calls) {
       const toolStart = Date.now()
+      // Type narrowing: only function tool calls have .function
+      const fn = (tc as any).function as { name: string; arguments: string } | undefined
+      if (!fn) continue
       let args: Record<string, unknown> = {}
-      try { args = JSON.parse(tc.function.arguments) } catch { /* empty */ }
-      const mcpId = findToolMcp(tools, tc.function.name)
+      try { args = JSON.parse(fn.arguments) } catch { /* empty */ }
+      const mcpId = findToolMcp(tools, fn.name)
       if (!mcpId) {
-        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: `Tool not found: ${tc.function.name}` })
-        onSpan?.({ type: 'tool', name: tc.function.name, input: tc.function.arguments.slice(0, 300), output: 'Tool not found', durationMs: Date.now() - toolStart, status: 'error' })
+        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: `Tool not found: ${fn.name}` })
+        onSpan?.({ type: 'tool', name: fn.name, input: fn.arguments.slice(0, 300), output: 'Tool not found', durationMs: Date.now() - toolStart, status: 'error' })
         continue
       }
-      const result = await callTool(mcpId, tc.function.name, args)
-      onSpan?.({ type: 'tool', name: tc.function.name, input: tc.function.arguments.slice(0, 300), output: result.content.slice(0, 500), durationMs: Date.now() - toolStart, status: result.isError ? 'error' : 'success' })
+      const result = await callTool(mcpId, fn.name, args)
+      onSpan?.({ type: 'tool', name: fn.name, input: fn.arguments.slice(0, 300), output: result.content.slice(0, 500), durationMs: Date.now() - toolStart, status: result.isError ? 'error' : 'success' })
       openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: result.content })
     }
   }
@@ -279,13 +284,42 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
       `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
   }
 
+  // Long-term memory: load past interactions and inject into system prompt
+  try {
+    const memCtx = loadMemoryContext(agentId)
+    if (memCtx) finalSystem += memCtx
+  } catch (e) {
+    console.error(`[memory] load failed for ${agentId}:`, e)
+  }
+
   // Link Understanding: augment the last user message with fetched URL content
   const augmentedMessages = await augmentUserLinks(messages)
 
-  if (model.provider === 'anthropic') {
-    yield* streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
-  } else {
-    yield* streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
+  // Collect full assistant response for memory persistence
+  let fullResponse = ''
+  const innerGen = model.provider === 'anthropic'
+    ? streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
+    : streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
+
+  for await (const chunk of innerGen) {
+    // Only collect visible text, skip meta/control tags
+    if (chunk && !chunk.startsWith('[TOOL_CALL:') && !chunk.startsWith('[TOOL_RESULT:') &&
+        !chunk.startsWith('[STREAM_META:') && !chunk.startsWith('[FILE_OUTPUT:') &&
+        !chunk.startsWith('[AGENT_INFO:') && !chunk.startsWith('[DISPATCH_START:') &&
+        !chunk.startsWith('[DISPATCH_END:')) {
+      fullResponse += chunk
+    }
+    yield chunk
+  }
+
+  // Save this turn to long-term memory
+  const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || ''
+  if (lastUserMsg && fullResponse.trim()) {
+    try {
+      saveTurn(agentId, lastUserMsg, fullResponse.trim())
+    } catch (e) {
+      console.error(`[memory] save failed for ${agentId}:`, e)
+    }
   }
 }
 
@@ -362,7 +396,13 @@ async function* streamAnthropicWithTools(
         yield `[DISPATCH_START:${targetId}|${agentName}]`
         let workerOutput = ''
         try {
-          for await (const chunk of streamTask(targetId, [{ role: 'user' as const, content: prompt }], channelCtx)) {
+          // Pass only recent context — worker's long-term memory fills the rest
+          const recentCtx = messages.slice(-DISPATCH_CONTEXT_LIMIT)
+          const workerMessages: ChatMessage[] = [
+            ...recentCtx,
+            { role: 'user' as const, content: prompt },
+          ]
+          for await (const chunk of streamTask(targetId, workerMessages, channelCtx)) {
             if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
                 chunk.startsWith('[FILE_OUTPUT:')) {
               yield chunk
@@ -500,6 +540,54 @@ async function* streamOpenAIWithTools(
       yield `[TOOL_CALL:${tc.name}]`
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(tc.arguments) } catch { /* empty */ }
+
+      // Special handling: dispatch_to_agent streams worker output with conversation history
+      if (tc.name === 'dispatch_to_agent') {
+        const targetId = args.agentId as string
+        const prompt = args.prompt as string
+        if (!targetId || !prompt) {
+          openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: '缺少 agentId 或 prompt' })
+          yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
+          continue
+        }
+        const targetAgent = getAgent(targetId)
+        const agentName = targetAgent?.name || targetId
+
+        yield `[DISPATCH_START:${targetId}|${agentName}]`
+        let workerOutput = ''
+        try {
+          // Pass only recent context — worker's long-term memory fills the rest
+          const recentCtx = messages.slice(-DISPATCH_CONTEXT_LIMIT)
+          const workerMessages: ChatMessage[] = [
+            ...recentCtx,
+            { role: 'user' as const, content: prompt },
+          ]
+          for await (const chunk of streamTask(targetId, workerMessages, _channelCtx)) {
+            if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
+                chunk.startsWith('[FILE_OUTPUT:')) {
+              yield chunk
+              continue
+            }
+            if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
+                chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
+            if (chunk) {
+              workerOutput += chunk
+              yield chunk
+            }
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          workerOutput = `执行失败: ${errMsg}`
+          yield workerOutput
+        }
+        yield `[DISPATCH_END:${agentName}]`
+
+        const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
+        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
+        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: workerOutput.trim() || '(无回复)' })
+        continue
+      }
+
       const mcpId = findToolMcp(tools, tc.name)
       if (!mcpId) {
         openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: `Tool not found: ${tc.name}` })

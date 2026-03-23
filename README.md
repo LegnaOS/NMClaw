@@ -44,6 +44,9 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **文件系统管理** | copy / move / delete（两步确认防误删）+ send_file（Web 端可点击下载）+ send_file_to_channel（跨渠道发送） |
 | **无浏览器网页抓取** | 纯 HTTP + HTML 解析，随机 UA 轮换、自动重试、4 层内容提取，零二进制依赖 |
 | **SSE 流式对话** | 实时 token 流 + 工具调用可视化 + Worker 子会话折叠展示 |
+| **Agent 长期记忆** | 每个 Agent 独立记忆存储，跨会话保持上下文，自动摘要历史对话 |
+| **飞书对话历史** | 飞书渠道自动携带最近 20 条对话上下文，支持多轮连续对话 |
+| **代理兼容工具调用** | 通过 XML tool protocol 实现工具调用，兼容 API 代理/中转服务 |
 | **Agent Graph** | DAG 工作流编排，条件分支，SSE 实时执行事件 |
 | **CRON 定时任务** | cron 表达式绑定 Agent 自动执行 |
 | **EvoMap 协作网络** | GEP-A2A 协议注册节点、心跳保活、积分同步 |
@@ -84,7 +87,7 @@ pnpm build && pnpm start  # 生产模式
 ```
 src/
   server.ts            Hono HTTP + SSE 流式接口
-  executor.ts          LLM 引擎（Anthropic/OpenAI + 工具调用 + 委派）
+  executor.ts          LLM 引擎（raw fetch + XML tool protocol，兼容 API 代理）
   genesis.ts           Genesis 内核（匹配 + 路由）
   agent-manager.ts     Agent 生命周期（创建/销毁/TTL/回收）
   mcp-runtime.ts       MCP 运行时（stdio/SSE/内置 + Agent 级隔离）
@@ -92,6 +95,7 @@ src/
   skill-registry.ts    技能 CRUD + 模板（新增自动绑定 Genesis）
   mcp-registry.ts      MCP 服务 CRUD（新增自动绑定 Genesis）
   skill-upload.ts      技能上传 + URL 导入
+  memory.ts            Agent 长期记忆（跨会话持久化 + 自动摘要）
   ext/
     evomap.ts          EvoMap GEP-A2A 协议（注册/心跳/积分）
     clawhub.ts         ClawHub 商店客户端

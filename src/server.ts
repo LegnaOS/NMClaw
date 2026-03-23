@@ -42,6 +42,7 @@ import { warmupStdioMcps } from './mcp-runtime.js'
 import { startHeartbeatLoop } from './ext/evomap.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
 import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
+import { listTurns, listSummaries, getMemoryStats, addTurn, editTurn, deleteTurn, deleteSummary, purgeAgentMemory, extractKnowledgeGraph } from './memory.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
 // Seed default models & agents on first run
@@ -640,6 +641,56 @@ app.get('/api/channel-messages/stream', (c) => {
     }
     unsub()
   })
+})
+
+// ═══════════════════════════════════
+//  Agent Memory Management
+// ═══════════════════════════════════
+app.get('/api/agents/:id/memory', (c) => {
+  const agentId = c.req.param('id')
+  const limit = parseInt(c.req.query('limit') ?? '100')
+  const offset = parseInt(c.req.query('offset') ?? '0')
+  const turns = listTurns(agentId, limit, offset)
+  const summaries = listSummaries(agentId)
+  const stats = getMemoryStats(agentId)
+  return c.json({ turns, summaries, stats })
+})
+
+app.post('/api/agents/:id/memory/turns', async (c) => {
+  const agentId = c.req.param('id')
+  const body = await c.req.json()
+  if (!body.user_message || !body.assistant_response) return c.json({ error: 'user_message and assistant_response required' }, 400)
+  const turn = addTurn(agentId, body.user_message, body.assistant_response)
+  return c.json(turn, 201)
+})
+
+app.patch('/api/agents/:id/memory/turns/:turnId', async (c) => {
+  const body = await c.req.json()
+  const ok = editTurn(c.req.param('id'), parseInt(c.req.param('turnId')), body)
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+app.delete('/api/agents/:id/memory/turns/:turnId', (c) => {
+  const ok = deleteTurn(c.req.param('id'), parseInt(c.req.param('turnId')))
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+app.delete('/api/agents/:id/memory/summaries/:sumId', (c) => {
+  const ok = deleteSummary(c.req.param('id'), parseInt(c.req.param('sumId')))
+  if (!ok) return c.json({ error: 'not found' }, 404)
+  return c.json({ ok: true })
+})
+
+app.delete('/api/agents/:id/memory', (c) => {
+  purgeAgentMemory(c.req.param('id'))
+  return c.json({ ok: true })
+})
+
+app.get('/api/agents/:id/memory/graph', (c) => {
+  const graph = extractKnowledgeGraph(c.req.param('id'))
+  return c.json(graph)
 })
 
 // ═══════════════════════════════════

@@ -96,6 +96,19 @@ export const api = {
   scanLocalMcps: () => request<any>('/local-mcps'),
   importLocalMcp: (data: any) => request<any>('/local-mcps/import', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Agent Memory
+  getAgentMemory: (id: string, limit = 100, offset = 0) => request<any>(`/agents/${id}/memory?limit=${limit}&offset=${offset}`),
+  addMemoryTurn: (id: string, data: { user_message: string; assistant_response: string }) =>
+    request<any>(`/agents/${id}/memory/turns`, { method: 'POST', body: JSON.stringify(data) }),
+  editMemoryTurn: (id: string, turnId: number, data: any) =>
+    request<any>(`/agents/${id}/memory/turns/${turnId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteMemoryTurn: (id: string, turnId: number) =>
+    request<any>(`/agents/${id}/memory/turns/${turnId}`, { method: 'DELETE' }),
+  deleteMemorySummary: (id: string, sumId: number) =>
+    request<any>(`/agents/${id}/memory/summaries/${sumId}`, { method: 'DELETE' }),
+  clearAgentMemory: (id: string) => request<any>(`/agents/${id}/memory`, { method: 'DELETE' }),
+  getMemoryGraph: (id: string) => request<any>(`/agents/${id}/memory/graph`),
+
   // Channel messages
   getChannelConversations: () => request<any[]>('/channel-conversations'),
   getChannelMessages: (conversationId?: string, limit = 50) => {

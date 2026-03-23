@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import AgentMemory from './AgentMemory'
 
 function formatDuration(ms: number): string {
   const hours = Math.floor(ms / 3600000)
@@ -42,6 +43,7 @@ export default function Agents() {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState<FormData>({ ...emptyForm })
   const [tab, setTab] = useState<'active' | 'destroyed'>('active')
+  const [memoryAgent, setMemoryAgent] = useState<any>(null)
 
   const load = () => {
     Promise.all([api.listAgents(true), api.listModels(), api.listSkills(), api.listMcps()])
@@ -305,10 +307,14 @@ export default function Agents() {
               <>
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-bold">{selected.name}</h3>
-                  {selected.state !== 'destroyed' && (
-                    <button onClick={startEdit}
-                      className="text-xs text-[#3b82f6] hover:text-[#60a5fa] transition-colors">编辑</button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setMemoryAgent(selected)}
+                      className="text-xs text-purple-400 hover:text-purple-300 transition-colors">🧠 记忆</button>
+                    {selected.state !== 'destroyed' && (
+                      <button onClick={startEdit}
+                        className="text-xs text-[#3b82f6] hover:text-[#60a5fa] transition-colors">编辑</button>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2 text-xs">
                   <div><span className="text-[#94a3b8]">ID:</span> <span className="font-mono">{selected.id}</span></div>
@@ -349,6 +355,7 @@ export default function Agents() {
           </div>
         )}
       </div>
+      {memoryAgent && <AgentMemory agentId={memoryAgent.id} agentName={memoryAgent.name} onClose={() => setMemoryAgent(null)} />}
     </div>
   )
 }
