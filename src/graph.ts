@@ -60,12 +60,41 @@ function findStartNodes(graph: GraphConfig): string[] {
 
 function evaluateCondition(condition: string | undefined, output: string): boolean {
   if (!condition) return true
-  // Simple keyword match: "contains:keyword" or plain keyword
   const lower = output.toLowerCase()
   if (condition.startsWith('contains:')) {
     return lower.includes(condition.slice(9).trim().toLowerCase())
   }
   return lower.includes(condition.toLowerCase())
+}
+
+/** Build the prompt for a node based on its position in the DAG */
+function buildNodeInput(
+  originalInput: string,
+  inEdges: GraphEdge[],
+  results: Map<string, string>,
+  nodeMap: Map<string, GraphNode>,
+): string {
+  // Start node: just the original input
+  if (inEdges.length === 0) return originalInput
+
+  // Collect upstream outputs with meaningful labels
+  const upstreamParts = inEdges
+    .map(e => {
+      const label = nodeMap.get(e.from)?.label || e.from
+      const out = results.get(e.from)
+      return out ? `【${label}】的输出:\n${out}` : null
+    })
+    .filter(Boolean) as string[]
+
+  if (upstreamParts.length === 0) return originalInput
+
+  // Single upstream: output is the primary content
+  if (upstreamParts.length === 1) {
+    return `原始任务: ${originalInput}\n\n${upstreamParts[0]}\n\n请基于上游节点的输出继续处理。`
+  }
+
+  // Multiple upstream (aggregation): clearly separate each source
+  return `原始任务: ${originalInput}\n\n以下是多个上游节点的输出，请综合处理:\n\n${upstreamParts.join('\n\n---\n\n')}`
 }
 
 export async function executeGraph(
@@ -78,65 +107,66 @@ export async function executeGraph(
 
   const results = new Map<string, string>()
   const executed = new Set<string>()
+  const failed = new Set<string>()
+  const nodeMap = new Map(graph.nodes.map(n => [n.id, n]))
+  const pending = new Set(graph.nodes.map(n => n.id))
 
-  // Topological execution
   const startNodes = findStartNodes(graph)
   if (startNodes.length === 0) throw new Error('Graph has no start nodes (cycle detected?)')
 
-  const queue = [...startNodes]
-
-  while (queue.length > 0) {
-    const nodeId = queue.shift()!
-    if (executed.has(nodeId)) continue
-
-    // Check all incoming edges are satisfied
-    const inEdges = graph.edges.filter((e) => e.to === nodeId)
-    const ready = inEdges.every((e) => executed.has(e.from))
-    if (!ready) { queue.push(nodeId); continue }
-
-    const node = graph.nodes.find((n) => n.id === nodeId)
-    if (!node) continue
-
-    const agent = getAgent(node.agentId)
-    if (!agent) {
-      onEvent({ type: 'node_error', nodeId, nodeLabel: node.label, error: `Agent ${node.agentId} not found` })
-      executed.add(nodeId)
-      continue
-    }
-
-    // Build node input: original input + outputs from upstream nodes
-    const upstreamOutputs = inEdges
-      .map((e) => { const out = results.get(e.from); return out ? `[${e.from}]: ${out}` : '' })
-      .filter(Boolean)
-      .join('\n\n')
-
-    const nodeInput = upstreamOutputs
-      ? `${input}\n\n--- 上游节点输出 ---\n${upstreamOutputs}`
-      : input
-
-    onEvent({ type: 'node_start', nodeId, nodeLabel: node.label, agentId: node.agentId })
-
-    try {
-      const result = await executeTask(node.agentId, nodeInput)
-      results.set(nodeId, result.content)
-      executed.add(nodeId)
-
-      onEvent({
-        type: 'node_complete', nodeId, nodeLabel: node.label,
-        agentId: node.agentId, output: result.content, tokensUsed: result.tokensUsed,
-      })
-
-      // Enqueue downstream nodes whose conditions are met
-      const outEdges = graph.edges.filter((e) => e.from === nodeId)
-      for (const edge of outEdges) {
-        if (!executed.has(edge.to) && evaluateCondition(edge.condition, result.content)) {
-          if (!queue.includes(edge.to)) queue.push(edge.to)
-        }
+  // Wave-based execution: each iteration finds all ready nodes and runs them in parallel
+  while (pending.size > 0) {
+    const ready: string[] = []
+    for (const nodeId of pending) {
+      const inEdges = graph.edges.filter(e => e.to === nodeId)
+      // All predecessors must have finished (executed or failed)
+      if (!inEdges.every(e => executed.has(e.from) || failed.has(e.from))) continue
+      // At least one incoming edge must pass its condition (or no incoming edges)
+      if (inEdges.length > 0) {
+        const anyPass = inEdges.some(e => {
+          const out = results.get(e.from)
+          return out !== undefined && evaluateCondition(e.condition, out)
+        })
+        if (!anyPass) { pending.delete(nodeId); continue } // condition blocked, skip permanently
       }
-    } catch (err) {
-      executed.add(nodeId)
-      onEvent({ type: 'node_error', nodeId, nodeLabel: node.label, error: err instanceof Error ? err.message : String(err) })
+      ready.push(nodeId)
     }
+
+    if (ready.length === 0) break // no more nodes can run
+
+    // Execute all ready nodes in parallel
+    await Promise.all(ready.map(async (nodeId) => {
+      pending.delete(nodeId)
+      const node = nodeMap.get(nodeId)
+      if (!node) { executed.add(nodeId); return }
+
+      const agent = getAgent(node.agentId)
+      if (!agent) {
+        onEvent({ type: 'node_error', nodeId, nodeLabel: node.label, error: `Agent ${node.agentId} not found` })
+        failed.add(nodeId)
+        executed.add(nodeId)
+        return
+      }
+
+      const inEdges = graph.edges.filter(e => e.to === nodeId)
+      const nodeInput = buildNodeInput(input, inEdges, results, nodeMap)
+
+      onEvent({ type: 'node_start', nodeId, nodeLabel: node.label, agentId: node.agentId })
+
+      try {
+        const result = await executeTask(node.agentId, nodeInput)
+        results.set(nodeId, result.content)
+        executed.add(nodeId)
+        onEvent({
+          type: 'node_complete', nodeId, nodeLabel: node.label,
+          agentId: node.agentId, output: result.content, tokensUsed: result.tokensUsed,
+        })
+      } catch (err) {
+        executed.add(nodeId)
+        failed.add(nodeId)
+        onEvent({ type: 'node_error', nodeId, nodeLabel: node.label, error: err instanceof Error ? err.message : String(err) })
+      }
+    }))
   }
 
   onEvent({ type: 'graph_complete' })
