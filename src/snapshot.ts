@@ -10,7 +10,7 @@
  */
 import Database from 'better-sqlite3'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { getStoreDir } from './store.js'
 import type { SnapshotConfig } from './types.js'
 
@@ -280,7 +280,6 @@ export function restoreFileSnapshot(id: number): { ok: boolean; error?: string; 
     recordFileSnapshot(`restore:${id}`, snap.file_path)
   }
 
-  const { dirname } = require('node:path')
   const dir = dirname(snap.file_path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
