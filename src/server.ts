@@ -33,6 +33,7 @@ import {
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
 import { streamTask, getCacheStats } from './executor.js'
+import { recordSnapshot, shouldSnapshot, describeAction, listSnapshots, getSnapshot, restoreSnapshot, diffSnapshot, getSnapshotCount } from './snapshot.js'
 import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './ext/clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
@@ -70,6 +71,17 @@ app.use('/api/*', cors())
 // ─── Lifecycle sweep middleware ───
 app.use('/api/*', async (c, next) => {
   sweepLifecycle()
+  await next()
+})
+
+// ─── 记忆回溯：自动快照中间件 ───
+app.use('/api/*', async (c, next) => {
+  const method = c.req.method
+  const path = c.req.path
+  if (shouldSnapshot(method, path)) {
+    const action = describeAction(method, path)
+    recordSnapshot(action)
+  }
   await next()
 })
 
@@ -642,6 +654,37 @@ app.get('/api/channel-messages/stream', (c) => {
     }
     unsub()
   })
+})
+
+// ═══════════════════════════════════
+//  记忆回溯（Snapshots）
+// ═══════════════════════════════════
+app.get('/api/snapshots', (c) => {
+  const limit = parseInt(c.req.query('limit') ?? '50')
+  const offset = parseInt(c.req.query('offset') ?? '0')
+  const items = listSnapshots(limit, offset)
+  const total = getSnapshotCount()
+  return c.json({ items, total })
+})
+
+app.get('/api/snapshots/:id', (c) => {
+  const snap = getSnapshot(parseInt(c.req.param('id')))
+  if (!snap) return c.json({ error: 'not found' }, 404)
+  // 返回时不包含完整 store_json（太大），只返回 diff
+  const diff = diffSnapshot(snap.id)
+  return c.json({ id: snap.id, action: snap.action, summary: snap.summary, created_at: snap.created_at, diff: diff.diff ?? {} })
+})
+
+app.get('/api/snapshots/:id/diff', (c) => {
+  const result = diffSnapshot(parseInt(c.req.param('id')))
+  if (!result.ok) return c.json({ error: result.error }, 404)
+  return c.json(result.diff)
+})
+
+app.post('/api/snapshots/:id/restore', (c) => {
+  const result = restoreSnapshot(parseInt(c.req.param('id')))
+  if (!result.ok) return c.json({ error: result.error }, 404)
+  return c.json({ ok: true, message: `已恢复到快照 #${c.req.param('id')}` })
 })
 
 // ═══════════════════════════════════

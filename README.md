@@ -48,6 +48,7 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **飞书对话历史** | 飞书渠道自动携带最近 20 条对话上下文，支持多轮连续对话 |
 | **代理兼容工具调用** | 通过 XML tool protocol 实现工具调用，兼容 API 代理/中转服务 |
 | **Agent Graph** | DAG 工作流编排，上游输出自动流转下游、多源聚合、同层并行执行、条件分支 |
+| **记忆回溯** | 每次资源变更自动拍快照（最多 200 条），支持回溯到任意历史版本，恢复操作本身也可撤销。Genesis Agent 内置回溯工具，Web 面板可视化时间线 |
 | **CRON 定时任务** | cron 表达式绑定 Agent 自动执行 |
 | **EvoMap 协作网络** | GEP-A2A 协议注册节点、心跳保活、积分同步 |
 | **飞书渠道** | WebSocket 长连接，流式卡片回复，白名单 + 配对码访问控制 |
@@ -104,6 +105,7 @@ src/
   graph.ts             DAG 工作流引擎
   cron.ts              CRON 定时调度
   tracker.ts           任务追踪（嵌套 span + 时间轴）
+  snapshot.ts          记忆回溯（操作快照 + 版本恢复）
   store.ts             JSON 持久化（~/.nmclaw/store.json）
   seed.ts              首次运行默认数据 + 增量迁移
   local-mcp-scanner.ts 本地 MCP 配置自动发现
@@ -112,7 +114,7 @@ src/
     feishu.ts          飞书渠道（WebSocket + 流式卡片 + 配对码 + 大文件分片上传 + 云空间授权）
 web/
   src/pages/           React 前端（Chat / Dashboard / Agents / Models /
-                       Skills / Mcps / Graphs / Cron / Channels / ClawHub / Tasks）
+                       Skills / Mcps / Graphs / Cron / Channels / Snapshots / ClawHub / Tasks）
 ```
 
 ## 技术栈

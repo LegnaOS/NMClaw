@@ -118,6 +118,12 @@ export const api = {
     return request<any[]>(`/channel-messages?${params}`)
   },
 
+  // Snapshots (记忆回溯)
+  listSnapshots: (limit = 50, offset = 0) => request<{ items: any[]; total: number }>(`/snapshots?limit=${limit}&offset=${offset}`),
+  getSnapshotDetail: (id: number) => request<any>(`/snapshots/${id}`),
+  getSnapshotDiff: (id: number) => request<any>(`/snapshots/${id}/diff`),
+  restoreSnapshot: (id: number) => request<any>(`/snapshots/${id}/restore`, { method: 'POST' }),
+
   // Chat (streaming) — always routes through Genesis Agent
   chat: async function* (messages: { role: string; content: string }[], signal?: AbortSignal): AsyncGenerator<string> {
     const res = await fetch(`${BASE}/chat`, {

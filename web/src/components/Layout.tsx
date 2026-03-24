@@ -13,6 +13,7 @@ const NAV_ITEMS: { key: Page; label: string; icon: string; separator?: boolean }
   { key: 'tasks', label: '任务', icon: '▶', separator: true },
   { key: 'cron', label: '定时任务', icon: '⏰' },
   { key: 'channels', label: '渠道', icon: '🔗' },
+  { key: 'snapshots', label: '记忆回溯', icon: '⏪' },
 ]
 
 export default function Layout({

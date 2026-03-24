@@ -11,8 +11,9 @@ import Graphs from './pages/Graphs'
 import ClawHub from './pages/ClawHub'
 import Cron from './pages/Cron'
 import Channels from './pages/Channels'
+import Snapshots from './pages/Snapshots'
 
-export type Page = 'chat' | 'dashboard' | 'models' | 'skills' | 'mcps' | 'agents' | 'tasks' | 'graphs' | 'clawhub' | 'cron' | 'channels'
+export type Page = 'chat' | 'dashboard' | 'models' | 'skills' | 'mcps' | 'agents' | 'tasks' | 'graphs' | 'clawhub' | 'cron' | 'channels' | 'snapshots'
 
 export default function App() {
   const [page, setPage] = useState<Page>('chat')
@@ -31,6 +32,7 @@ export default function App() {
       {page === 'clawhub' && <ClawHub />}
       {page === 'cron' && <Cron />}
       {page === 'channels' && <Channels />}
+      {page === 'snapshots' && <Snapshots />}
     </Layout>
   )
 }

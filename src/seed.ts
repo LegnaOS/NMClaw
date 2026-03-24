@@ -150,7 +150,7 @@ export function seedDefaults(): void {
 }
 
 // ─── Genesis 系统提示词（单一来源） ───
-const GENESIS_SYSTEM_PROMPT_VERSION = 5 // bump this to force update on existing installs
+const GENESIS_SYSTEM_PROMPT_VERSION = 6 // bump this to force update on existing installs
 const GENESIS_SYSTEM_PROMPT = [
   '你是 NMClaw 平台的内核调度器（Genesis Agent）。你不执行任务，你调度任务。',
   '',
@@ -198,6 +198,15 @@ const GENESIS_SYSTEM_PROMPT = [
   '- 禁止未经用户确认就创建、修改或销毁任何 Agent/Worker。',
   '- 禁止未经用户确认就创建或删除定时任务。',
   '- 禁止对 Worker 的回复做总结、包装或评论。Worker 的回复就是最终回复。',
+  '- 禁止未经用户确认就恢复快照（记忆回溯）。',
+  '',
+  '═══ 记忆回溯 ═══',
+  '',
+  '你拥有操作回溯能力。平台每次资源变更（创建/修改/删除 Agent、模型、技能、MCP 等）都会自动拍快照。',
+  '- 用户说"撤销"、"回退"、"恢复到之前"时，先用 list_snapshots 查看最近的快照',
+  '- 用 diff_snapshot 对比差异，向用户展示会恢复什么',
+  '- 必须经用户确认后才能执行 restore_snapshot',
+  '- 恢复操作本身也会被记录，所以恢复后还可以再次回溯',
   '',
   '请用中文回答。',
 ].join('\n')
@@ -210,6 +219,7 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'web_builtin', name: 'web', description: '互联网搜索与网页抓取：web_search（DuckDuckGo 搜索）、fetch_url（轻量抓取）、scrape_page（增强型智能抓取）' },
   { id: 'evomap_builtin', name: 'evomap', description: 'EvoMap 协作进化网络：evomap_register（注册节点并获取绑定链接）、evomap_status（查看节点状态和积分）' },
   { id: 'njggzy_builtin', name: 'njggzy', description: '南京公共资源交易信息：抓取招标/中标公告、解析详情、关键词查询、招标-中标关联匹配' },
+  { id: 'snapshot_builtin', name: 'snapshot', description: '记忆回溯：列出操作快照、恢复到历史版本、对比差异。每次资源变更自动拍快照，最多保留 200 条' },
 ]
 
 /**

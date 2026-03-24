@@ -313,6 +313,44 @@ async function builtinPlatform(name: string, input: Record<string, unknown>): Pr
   }
 }
 
+// ─── Snapshot tools: 记忆回溯 ───
+
+async function builtinSnapshot(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const { listSnapshots: listSnap, restoreSnapshot: restoreSnap, diffSnapshot: diffSnap } = await import('./snapshot.js')
+    if (name === 'list_snapshots') {
+      const limit = (input.limit as number) || 20
+      const items = listSnap(limit)
+      if (items.length === 0) return { content: '暂无操作快照记录' }
+      const lines = items.map(s => {
+        const time = new Date(s.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+        return `#${s.id} | ${time} | ${s.action}${s.summary ? ` — ${s.summary}` : ''}`
+      })
+      return { content: `最近 ${items.length} 条操作快照:\n\n${lines.join('\n')}` }
+    }
+    if (name === 'restore_snapshot') {
+      const id = input.snapshotId as number
+      if (!id) return { content: '缺少 snapshotId', isError: true }
+      const result = restoreSnap(id)
+      if (!result.ok) return { content: result.error ?? '恢复失败', isError: true }
+      return { content: `✅ 已恢复到快照 #${id}。恢复前的状态已自动保存，可随时再次回溯。` }
+    }
+    if (name === 'diff_snapshot') {
+      const id = input.snapshotId as number
+      if (!id) return { content: '缺少 snapshotId', isError: true }
+      const result = diffSnap(id)
+      if (!result.ok) return { content: result.error ?? '对比失败', isError: true }
+      const diff = result.diff ?? {}
+      if (Object.keys(diff).length === 0) return { content: `快照 #${id} 与当前状态无差异` }
+      const lines = Object.entries(diff).map(([k, v]) => `${k}: ${v.before} → ${v.after}`)
+      return { content: `快照 #${id} 与当前状态差异:\n${lines.join('\n')}` }
+    }
+    return { content: `未知快照操作: ${name}`, isError: true }
+  } catch (e) {
+    return { content: `快照操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
 // ─── Web tools: search / fetch / scrape ───
 
 const WEB_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -987,6 +1025,43 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
       },
     ],
     call: builtinNjggzy,
+  },
+  snapshot: {
+    tools: [
+      {
+        name: 'list_snapshots',
+        description: '列出平台操作快照（记忆回溯）。每次创建/修改/删除资源时自动拍快照，最多保留 200 条',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: '返回条数（默认 20）' },
+          },
+        },
+      },
+      {
+        name: 'restore_snapshot',
+        description: '恢复到指定快照版本（记忆回溯）。恢复前会自动保存当前状态，所以恢复操作本身也可以撤销。⚠️ 必须先向用户确认再执行',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            snapshotId: { type: 'number', description: '要恢复到的快照 ID（先用 list_snapshots 查看）' },
+          },
+          required: ['snapshotId'],
+        },
+      },
+      {
+        name: 'diff_snapshot',
+        description: '对比指定快照与当前状态的差异，显示各资源数量变化',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            snapshotId: { type: 'number', description: '快照 ID' },
+          },
+          required: ['snapshotId'],
+        },
+      },
+    ],
+    call: builtinSnapshot,
   },
 }
 
