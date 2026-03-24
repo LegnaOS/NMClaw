@@ -103,6 +103,11 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
     }
     if (name === 'write_file') {
       const p = resolve(input.path as string)
+      // 覆写已有文件前备份
+      if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+        const { recordFileSnapshot } = await import('./snapshot.js')
+        recordFileSnapshot('覆写文件', p)
+      }
       fs.writeFileSync(p, input.content as string, 'utf-8')
       return { content: `已写入: ${p}` }
     }
@@ -133,6 +138,11 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
       const src = resolve(input.source as string)
       const dst = resolve(input.destination as string)
       if (!fs.existsSync(src)) return { content: `源文件不存在: ${src}`, isError: true }
+      // 移动前备份源文件
+      if (fs.statSync(src).isFile()) {
+        const { recordFileSnapshot } = await import('./snapshot.js')
+        recordFileSnapshot('移动文件', src)
+      }
       const finalDst = fs.existsSync(dst) && fs.statSync(dst).isDirectory()
         ? resolve(dst, basename(src))
         : dst
@@ -168,6 +178,11 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
         return { content: `确认令牌无效或已过期，请重新发起删除请求`, isError: true }
       }
       deleteTokens.delete(confirmToken)
+      // 删除前备份文件内容
+      if (stat.isFile()) {
+        const { recordFileSnapshot } = await import('./snapshot.js')
+        recordFileSnapshot('删除文件', p)
+      }
       if (stat.isDirectory()) {
         fs.rmSync(p, { recursive: true, force: true })
       } else {
@@ -317,10 +332,10 @@ async function builtinPlatform(name: string, input: Record<string, unknown>): Pr
 
 async function builtinSnapshot(name: string, input: Record<string, unknown>): Promise<ToolResult> {
   try {
-    const { listSnapshots: listSnap, restoreSnapshot: restoreSnap, diffSnapshot: diffSnap } = await import('./snapshot.js')
+    const snap = await import('./snapshot.js')
     if (name === 'list_snapshots') {
       const limit = (input.limit as number) || 20
-      const items = listSnap(limit)
+      const items = snap.listSnapshots(limit)
       if (items.length === 0) return { content: '暂无操作快照记录' }
       const lines = items.map(s => {
         const time = new Date(s.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
@@ -331,19 +346,37 @@ async function builtinSnapshot(name: string, input: Record<string, unknown>): Pr
     if (name === 'restore_snapshot') {
       const id = input.snapshotId as number
       if (!id) return { content: '缺少 snapshotId', isError: true }
-      const result = restoreSnap(id)
+      const result = snap.restoreSnapshot(id)
       if (!result.ok) return { content: result.error ?? '恢复失败', isError: true }
       return { content: `✅ 已恢复到快照 #${id}。恢复前的状态已自动保存，可随时再次回溯。` }
     }
     if (name === 'diff_snapshot') {
       const id = input.snapshotId as number
       if (!id) return { content: '缺少 snapshotId', isError: true }
-      const result = diffSnap(id)
+      const result = snap.diffSnapshot(id)
       if (!result.ok) return { content: result.error ?? '对比失败', isError: true }
       const diff = result.diff ?? {}
       if (Object.keys(diff).length === 0) return { content: `快照 #${id} 与当前状态无差异` }
       const lines = Object.entries(diff).map(([k, v]) => `${k}: ${v.before} → ${v.after}`)
       return { content: `快照 #${id} 与当前状态差异:\n${lines.join('\n')}` }
+    }
+    if (name === 'list_file_snapshots') {
+      const limit = (input.limit as number) || 20
+      const items = snap.listFileSnapshots(limit)
+      if (items.length === 0) return { content: '暂无文件快照记录' }
+      const lines = items.map(s => {
+        const time = new Date(s.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+        const size = s.file_size < 1024 ? `${s.file_size}B` : `${(s.file_size / 1024).toFixed(1)}KB`
+        return `#${s.id} | ${time} | ${s.action} | ${s.file_path} (${size})`
+      })
+      return { content: `最近 ${items.length} 条文件快照:\n\n${lines.join('\n')}` }
+    }
+    if (name === 'restore_file_snapshot') {
+      const id = input.snapshotId as number
+      if (!id) return { content: '缺少 snapshotId', isError: true }
+      const result = snap.restoreFileSnapshot(id)
+      if (!result.ok) return { content: result.error ?? '恢复失败', isError: true }
+      return { content: `✅ 已恢复文件: ${result.path}。恢复前的文件已自动备份。` }
     }
     return { content: `未知快照操作: ${name}`, isError: true }
   } catch (e) {
@@ -1056,6 +1089,27 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           type: 'object',
           properties: {
             snapshotId: { type: 'number', description: '快照 ID' },
+          },
+          required: ['snapshotId'],
+        },
+      },
+      {
+        name: 'list_file_snapshots',
+        description: '列出文件快照（文件级回溯）。文件被覆写、移动或删除前自动备份原内容，可恢复',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: '返回条数（默认 20）' },
+          },
+        },
+      },
+      {
+        name: 'restore_file_snapshot',
+        description: '恢复文件快照 — 将备份内容写回原路径。恢复前会自动备份当前文件。⚠️ 必须先向用户确认再执行',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            snapshotId: { type: 'number', description: '文件快照 ID（先用 list_file_snapshots 查看）' },
           },
           required: ['snapshotId'],
         },

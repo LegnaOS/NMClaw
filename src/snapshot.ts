@@ -9,7 +9,7 @@
  *   永远保留最初始版本（id 最小的那条）
  */
 import Database from 'better-sqlite3'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { getStoreDir } from './store.js'
 import type { SnapshotConfig } from './types.js'
@@ -34,6 +34,16 @@ function getDb(): Database.Database {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_snap_time ON snapshots(created_at);
+    CREATE TABLE IF NOT EXISTS file_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_content BLOB,
+      file_size INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fsnap_time ON file_snapshots(created_at);
+    CREATE INDEX IF NOT EXISTS idx_fsnap_path ON file_snapshots(file_path);
   `)
   return db
 }
@@ -201,6 +211,82 @@ export function diffSnapshot(id: number): { ok: boolean; diff?: Record<string, {
   }
 
   return { ok: true, diff }
+}
+
+// ─── 文件快照 ───
+
+const MAX_FILE_SNAPSHOT_SIZE = 10 * 1024 * 1024 // 10MB
+
+export interface FileSnapshotRow {
+  id: number
+  action: string
+  file_path: string
+  file_size: number
+  created_at: number
+}
+
+export interface FileSnapshotDetail extends FileSnapshotRow {
+  file_content: Buffer
+}
+
+/** 文件快照：在破坏性文件操作前备份文件内容 */
+export function recordFileSnapshot(action: string, filePath: string): number {
+  const config = loadConfig()
+  if (!config.enabled) return -1
+
+  if (!existsSync(filePath)) return -1
+  const stat = statSync(filePath)
+  if (!stat.isFile()) return -1
+  if (stat.size > MAX_FILE_SNAPSHOT_SIZE) return -1
+
+  const d = getDb()
+  const content = readFileSync(filePath)
+  const info = d.prepare('INSERT INTO file_snapshots (action, file_path, file_content, file_size, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(action, filePath, content, stat.size, Date.now())
+
+  evictOldFileSnapshots(d, config.maxVersions)
+
+  console.log(`[file-snapshot] recorded #${info.lastInsertRowid}: ${action} — ${filePath} (${(stat.size / 1024).toFixed(1)} KB)`)
+  return info.lastInsertRowid as number
+}
+
+function evictOldFileSnapshots(d: Database.Database, maxVersions: number): void {
+  const limit = maxVersions * 3 // 文件快照允许更多条目（每个文件独立计数太复杂，用总量控制）
+  const total = (d.prepare('SELECT COUNT(*) as cnt FROM file_snapshots').get() as { cnt: number }).cnt
+  if (total <= limit) return
+  d.prepare('DELETE FROM file_snapshots WHERE id NOT IN (SELECT id FROM file_snapshots ORDER BY created_at DESC LIMIT ?)').run(limit)
+}
+
+export function listFileSnapshots(limit = 50, offset = 0): FileSnapshotRow[] {
+  return getDb().prepare('SELECT id, action, file_path, file_size, created_at FROM file_snapshots ORDER BY created_at DESC LIMIT ? OFFSET ?')
+    .all(limit, offset) as FileSnapshotRow[]
+}
+
+export function getFileSnapshotCount(): number {
+  return (getDb().prepare('SELECT COUNT(*) as cnt FROM file_snapshots').get() as { cnt: number }).cnt
+}
+
+export function getFileSnapshot(id: number): FileSnapshotDetail | undefined {
+  return getDb().prepare('SELECT * FROM file_snapshots WHERE id = ?').get(id) as FileSnapshotDetail | undefined
+}
+
+/** 恢复文件快照 — 将备份内容写回原路径 */
+export function restoreFileSnapshot(id: number): { ok: boolean; error?: string; path?: string } {
+  const snap = getDb().prepare('SELECT file_path, file_content FROM file_snapshots WHERE id = ?').get(id) as { file_path: string; file_content: Buffer } | undefined
+  if (!snap) return { ok: false, error: '文件快照不存在' }
+
+  // 恢复前备份当前文件（如果存在）
+  if (existsSync(snap.file_path)) {
+    recordFileSnapshot(`restore:${id}`, snap.file_path)
+  }
+
+  const { dirname } = require('node:path')
+  const dir = dirname(snap.file_path)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
+  writeFileSync(snap.file_path, snap.file_content)
+  console.log(`[file-snapshot] restored #${id} → ${snap.file_path}`)
+  return { ok: true, path: snap.file_path }
 }
 
 // ─── 判断是否为需要快照的变更请求 ───

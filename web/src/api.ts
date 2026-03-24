@@ -127,6 +127,10 @@ export const api = {
   updateSnapshotConfig: (data: { enabled?: boolean; maxVersions?: number }) =>
     request<any>('/snapshots/config', { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // File Snapshots (文件快照)
+  listFileSnapshots: (limit = 50, offset = 0) => request<{ items: any[]; total: number }>(`/file-snapshots?limit=${limit}&offset=${offset}`),
+  restoreFileSnapshot: (id: number) => request<any>(`/file-snapshots/${id}/restore`, { method: 'POST' }),
+
   // Chat (streaming) — always routes through Genesis Agent
   chat: async function* (messages: { role: string; content: string }[], signal?: AbortSignal): AsyncGenerator<string> {
     const res = await fetch(`${BASE}/chat`, {

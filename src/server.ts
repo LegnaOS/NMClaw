@@ -33,7 +33,7 @@ import {
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
 import { streamTask, getCacheStats } from './executor.js'
-import { recordSnapshot, shouldSnapshot, describeAction, listSnapshots, getSnapshot, restoreSnapshot, diffSnapshot, getSnapshotCount, getSnapshotConfig } from './snapshot.js'
+import { recordSnapshot, shouldSnapshot, describeAction, listSnapshots, getSnapshot, restoreSnapshot, diffSnapshot, getSnapshotCount, getSnapshotConfig, listFileSnapshots, getFileSnapshotCount, restoreFileSnapshot } from './snapshot.js'
 import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './ext/clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
@@ -700,6 +700,22 @@ app.post('/api/snapshots/:id/restore', (c) => {
   const result = restoreSnapshot(parseInt(c.req.param('id')))
   if (!result.ok) return c.json({ error: result.error }, 404)
   return c.json({ ok: true, message: `已恢复到快照 #${c.req.param('id')}` })
+})
+
+// ─── File Snapshots ───
+
+app.get('/api/file-snapshots', (c) => {
+  const limit = parseInt(c.req.query('limit') || '50')
+  const offset = parseInt(c.req.query('offset') || '0')
+  const items = listFileSnapshots(limit, offset)
+  const total = getFileSnapshotCount()
+  return c.json({ items, total })
+})
+
+app.post('/api/file-snapshots/:id/restore', (c) => {
+  const result = restoreFileSnapshot(parseInt(c.req.param('id')))
+  if (!result.ok) return c.json({ error: result.error }, 404)
+  return c.json({ ok: true, path: result.path })
 })
 
 // ═══════════════════════════════════
