@@ -284,7 +284,7 @@ export function restoreFileSnapshot(id: number): { ok: boolean; error?: string; 
 
   // 恢复前备份当前文件（如果存在）
   if (existsSync(snap.file_path)) {
-    recordFileSnapshot(`restore:${id}`, snap.file_path)
+    recordFileSnapshot('恢复前自动备份', snap.file_path)
   }
 
   const dir = dirname(snap.file_path)

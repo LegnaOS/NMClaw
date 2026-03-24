@@ -103,12 +103,16 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
     }
     if (name === 'write_file') {
       const p = resolve(input.path as string)
-      // 覆写已有文件前备份
-      if (fs.existsSync(p) && fs.statSync(p).isFile()) {
+      const existed = fs.existsSync(p) && fs.statSync(p).isFile()
+      if (existed) {
         const { recordFileSnapshot } = await import('./snapshot.js')
-        recordFileSnapshot('覆写文件', p)
+        recordFileSnapshot('Agent 覆写文件', p)
       }
       fs.writeFileSync(p, input.content as string, 'utf-8')
+      if (!existed) {
+        const { recordFileSnapshot } = await import('./snapshot.js')
+        recordFileSnapshot('Agent 创建文件', p)
+      }
       return { content: `已写入: ${p}` }
     }
     if (name === 'get_file_info') {
@@ -141,7 +145,7 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
       // 移动前备份源文件
       if (fs.statSync(src).isFile()) {
         const { recordFileSnapshot } = await import('./snapshot.js')
-        recordFileSnapshot('移动文件', src)
+        recordFileSnapshot('Agent 移动文件', src)
       }
       const finalDst = fs.existsSync(dst) && fs.statSync(dst).isDirectory()
         ? resolve(dst, basename(src))
@@ -181,7 +185,7 @@ async function builtinFilesystem(name: string, input: Record<string, unknown>): 
       // 删除前备份文件内容
       if (stat.isFile()) {
         const { recordFileSnapshot } = await import('./snapshot.js')
-        recordFileSnapshot('删除文件', p)
+        recordFileSnapshot('Agent 删除文件', p)
       }
       if (stat.isDirectory()) {
         fs.rmSync(p, { recursive: true, force: true })
