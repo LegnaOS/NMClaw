@@ -15,6 +15,10 @@ export default function Snapshots() {
   const [restoring, setRestoring] = useState<number | null>(null)
   const [diffData, setDiffData] = useState<Record<number, Record<string, { before: number; after: number }>>>({})
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [configEnabled, setConfigEnabled] = useState(true)
+  const [configMaxVersions, setConfigMaxVersions] = useState(10)
+  const [configSaving, setConfigSaving] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -27,6 +31,25 @@ export default function Snapshots() {
   }
 
   useEffect(() => { load() }, [])
+
+  const loadConfig = async () => {
+    try {
+      const cfg = await api.getSnapshotConfig()
+      setConfigEnabled(cfg.enabled)
+      setConfigMaxVersions(cfg.maxVersions)
+    } catch { /* */ }
+  }
+
+  const saveConfig = async () => {
+    setConfigSaving(true)
+    try {
+      await api.updateSnapshotConfig({ enabled: configEnabled, maxVersions: configMaxVersions })
+      load()
+    } catch (e) {
+      alert(`保存失败: ${e instanceof Error ? e.message : e}`)
+    }
+    setConfigSaving(false)
+  }
 
   const handleDiff = async (id: number) => {
     if (expandedId === id) { setExpandedId(null); return }
@@ -68,10 +91,69 @@ export default function Snapshots() {
           <h2 className="text-xl font-bold text-[#f1f5f9]">记忆回溯</h2>
           <p className="text-sm text-[#94a3b8] mt-1">每次资源变更自动拍快照，可随时恢复到任意历史版本</p>
         </div>
-        <div className="text-sm text-[#64748b]">
-          共 {total} 条快照（最多保留 200 条）
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-[#64748b]">共 {total} 条快照</span>
+          <button
+            onClick={() => { if (!showSettings) loadConfig(); setShowSettings(!showSettings) }}
+            className="px-3 py-1.5 text-xs rounded bg-[#334155] text-[#94a3b8] hover:bg-[#475569] hover:text-[#f1f5f9] transition-colors"
+          >
+            {showSettings ? '收起设置' : '⚙ 设置'}
+          </button>
         </div>
       </div>
+
+      {showSettings && (
+        <div className="mb-6 bg-[#1e293b] border border-[#334155] rounded-lg p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-medium text-[#f1f5f9]">启用快照</div>
+              <div className="text-xs text-[#64748b] mt-0.5">关闭后不再自动记录操作快照</div>
+            </div>
+            <button
+              onClick={() => setConfigEnabled(!configEnabled)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${configEnabled ? 'bg-[#3b82f6]' : 'bg-[#475569]'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${configEnabled ? 'translate-x-5' : ''}`} />
+            </button>
+          </div>
+
+          {configEnabled && (
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-[#f1f5f9]">保留版本数</div>
+                <div className="text-xs text-[#64748b] mt-0.5">最小 3，最大 200，永远保留最初始版本</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={3} max={200} value={configMaxVersions}
+                  onChange={e => setConfigMaxVersions(Number(e.target.value))}
+                  className="w-32 accent-[#3b82f6]"
+                />
+                <input
+                  type="number"
+                  min={3} max={200} value={configMaxVersions}
+                  onChange={e => {
+                    const v = Number(e.target.value)
+                    if (v >= 3 && v <= 200) setConfigMaxVersions(v)
+                  }}
+                  className="w-16 px-2 py-1 text-sm bg-[#0f172a] border border-[#334155] rounded text-[#f1f5f9] text-center"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              onClick={saveConfig}
+              disabled={configSaving}
+              className="px-4 py-1.5 text-xs rounded bg-[#3b82f6] text-white hover:bg-[#2563eb] disabled:opacity-50 transition-colors"
+            >
+              {configSaving ? '保存中...' : '保存设置'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="text-center text-[#64748b] py-12">加载中...</div>

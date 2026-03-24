@@ -2,13 +2,19 @@
  * 记忆回溯 — 操作快照引擎
  * 每次平台状态变更前自动拍快照，支持回溯到任意历史版本
  * Storage: ~/.nmclaw/snapshots.sqlite
+ *
+ * 配置项（store.snapshot）：
+ *   enabled: boolean  — false 关闭快照
+ *   maxVersions: 3-200 — 保留版本数，默认 10
+ *   永远保留最初始版本（id 最小的那条）
  */
 import Database from 'better-sqlite3'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getStoreDir } from './store.js'
+import type { SnapshotConfig } from './types.js'
 
-const MAX_SNAPSHOTS = 200
+const DEFAULT_CONFIG: SnapshotConfig = { enabled: true, maxVersions: 10 }
 
 let db: Database.Database | null = null
 
@@ -30,6 +36,27 @@ function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_snap_time ON snapshots(created_at);
   `)
   return db
+}
+
+// ─── 配置读取 ───
+
+function loadConfig(): SnapshotConfig {
+  try {
+    const storeFile = join(getStoreDir(), 'store.json')
+    if (!existsSync(storeFile)) return DEFAULT_CONFIG
+    const store = JSON.parse(readFileSync(storeFile, 'utf-8'))
+    if (!store.snapshot) return DEFAULT_CONFIG
+    return {
+      enabled: store.snapshot.enabled ?? DEFAULT_CONFIG.enabled,
+      maxVersions: store.snapshot.maxVersions ?? DEFAULT_CONFIG.maxVersions,
+    }
+  } catch {
+    return DEFAULT_CONFIG
+  }
+}
+
+export function getSnapshotConfig(): SnapshotConfig {
+  return loadConfig()
 }
 
 // ─── 操作描述映射 ───
@@ -61,10 +88,8 @@ const ACTION_LABELS: Record<string, string> = {
 }
 
 export function describeAction(method: string, path: string): string {
-  // 精确匹配
   const exact = ACTION_LABELS[`${method} ${path}`]
   if (exact) return exact
-  // 前缀匹配（处理 /api/models/:id 这类路径）
   for (const [pattern, label] of Object.entries(ACTION_LABELS)) {
     const [m, p] = pattern.split(' ')
     if (m === method && path.startsWith(p)) return label
@@ -87,6 +112,9 @@ export interface SnapshotDetail extends SnapshotRow {
 
 /** 拍快照：保存当前 store.json 状态 */
 export function recordSnapshot(action: string, summary = ''): number {
+  const config = loadConfig()
+  if (!config.enabled) return -1
+
   const d = getDb()
   const storeFile = join(getStoreDir(), 'store.json')
   if (!existsSync(storeFile)) return -1
@@ -95,11 +123,29 @@ export function recordSnapshot(action: string, summary = ''): number {
   const info = d.prepare('INSERT INTO snapshots (action, summary, store_json, created_at) VALUES (?, ?, ?, ?)')
     .run(action, summary, data, Date.now())
 
-  // 淘汰超出上限的旧快照
-  d.prepare('DELETE FROM snapshots WHERE id NOT IN (SELECT id FROM snapshots ORDER BY created_at DESC LIMIT ?)').run(MAX_SNAPSHOTS)
+  // 淘汰策略：永远保留最初始版本（id 最小），超出上限时删除其余最旧的
+  evictOldSnapshots(d, config.maxVersions)
 
   console.log(`[snapshot] recorded #${info.lastInsertRowid}: ${action}${summary ? ` — ${summary}` : ''}`)
   return info.lastInsertRowid as number
+}
+
+/** 淘汰旧快照：保留 maxVersions 条 + 永远保留初始版本 */
+function evictOldSnapshots(d: Database.Database, maxVersions: number): void {
+  const total = (d.prepare('SELECT COUNT(*) as cnt FROM snapshots').get() as { cnt: number }).cnt
+  if (total <= maxVersions) return
+
+  // 找到初始版本 id（最小的 id）
+  const first = d.prepare('SELECT id FROM snapshots ORDER BY id ASC LIMIT 1').get() as { id: number } | undefined
+  if (!first) return
+
+  // 删除：排除初始版本 + 排除最新的 (maxVersions - 1) 条
+  // 保留集合 = 初始版本 + 最新 (maxVersions - 1) 条
+  d.prepare(`
+    DELETE FROM snapshots
+    WHERE id != ?
+    AND id NOT IN (SELECT id FROM snapshots ORDER BY created_at DESC LIMIT ?)
+  `).run(first.id, maxVersions - 1)
 }
 
 /** 列出快照（分页） */
@@ -173,14 +219,11 @@ const EXCLUDED_PATHS = [
 
 export function shouldSnapshot(method: string, path: string): boolean {
   if (method !== 'POST' && method !== 'PATCH' && method !== 'DELETE') return false
-  // 排除非变更操作
   if (EXCLUDED_PATHS.some(p => path.startsWith(p))) return false
-  // 排除特定 POST 端点（执行/发送/启停/回调）
   if (method === 'POST' && (
     path.includes('/execute') || path.includes('/send') ||
     path.includes('/start') || path.includes('/stop') ||
     path.includes('/callback') || path.includes('/stream')
   )) return false
-  // 匹配资源变更路径
   return MUTATING_PREFIXES.some(p => path.startsWith(p))
 }

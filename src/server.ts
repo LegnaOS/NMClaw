@@ -33,7 +33,7 @@ import {
 import { matchAgent, dispatch, getSystemStatus } from './genesis.js'
 import { listTasks, getTask, getTaskTrace, deleteTask } from './tracker.js'
 import { streamTask, getCacheStats } from './executor.js'
-import { recordSnapshot, shouldSnapshot, describeAction, listSnapshots, getSnapshot, restoreSnapshot, diffSnapshot, getSnapshotCount } from './snapshot.js'
+import { recordSnapshot, shouldSnapshot, describeAction, listSnapshots, getSnapshot, restoreSnapshot, diffSnapshot, getSnapshotCount, getSnapshotConfig } from './snapshot.js'
 import { createGraph, listGraphs, getGraph, removeGraph, modifyGraph, executeGraph } from './graph.js'
 import { searchSkills as clawHubSearch, getSkillInfo as clawHubInfo } from './ext/clawhub.js'
 import { scanLocalMcps, getLocalMcpSources } from './local-mcp-scanner.js'
@@ -667,10 +667,25 @@ app.get('/api/snapshots', (c) => {
   return c.json({ items, total })
 })
 
+app.get('/api/snapshots/config', (c) => {
+  return c.json(getSnapshotConfig())
+})
+
+app.patch('/api/snapshots/config', async (c) => {
+  const body = await c.req.json()
+  updateStore((s) => {
+    if (!s.snapshot) s.snapshot = { enabled: true, maxVersions: 10 }
+    if (typeof body.enabled === 'boolean') s.snapshot.enabled = body.enabled
+    if (typeof body.maxVersions === 'number') {
+      s.snapshot.maxVersions = Math.max(3, Math.min(200, Math.round(body.maxVersions)))
+    }
+  })
+  return c.json(getSnapshotConfig())
+})
+
 app.get('/api/snapshots/:id', (c) => {
   const snap = getSnapshot(parseInt(c.req.param('id')))
   if (!snap) return c.json({ error: 'not found' }, 404)
-  // 返回时不包含完整 store_json（太大），只返回 diff
   const diff = diffSnapshot(snap.id)
   return c.json({ id: snap.id, action: snap.action, summary: snap.summary, created_at: snap.created_at, diff: diff.diff ?? {} })
 })

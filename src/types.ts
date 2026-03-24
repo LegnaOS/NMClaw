@@ -138,6 +138,11 @@ export interface EvoMapState {
 
 // --- Store ---
 
+export interface SnapshotConfig {
+  enabled: boolean       // false = 不备份
+  maxVersions: number    // 保留版本数，3-200，默认 10
+}
+
 export interface StoreData {
   models: ModelConfig[]
   skills: SkillConfig[]
@@ -150,6 +155,7 @@ export interface StoreData {
   channels: ChannelConfig[]
   pairings: PairingRecord[]
   evomap?: EvoMapState
+  snapshot?: SnapshotConfig
 }
 
 // --- LLM Adapter ---

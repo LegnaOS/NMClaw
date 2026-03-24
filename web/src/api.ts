@@ -123,6 +123,9 @@ export const api = {
   getSnapshotDetail: (id: number) => request<any>(`/snapshots/${id}`),
   getSnapshotDiff: (id: number) => request<any>(`/snapshots/${id}/diff`),
   restoreSnapshot: (id: number) => request<any>(`/snapshots/${id}/restore`, { method: 'POST' }),
+  getSnapshotConfig: () => request<{ enabled: boolean; maxVersions: number }>('/snapshots/config'),
+  updateSnapshotConfig: (data: { enabled?: boolean; maxVersions?: number }) =>
+    request<any>('/snapshots/config', { method: 'PATCH', body: JSON.stringify(data) }),
 
   // Chat (streaming) — always routes through Genesis Agent
   chat: async function* (messages: { role: string; content: string }[], signal?: AbortSignal): AsyncGenerator<string> {
