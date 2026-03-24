@@ -251,10 +251,17 @@ export function recordFileSnapshot(action: string, filePath: string): number {
 }
 
 function evictOldFileSnapshots(d: Database.Database, maxVersions: number): void {
-  const limit = maxVersions * 3 // 文件快照允许更多条目（每个文件独立计数太复杂，用总量控制）
-  const total = (d.prepare('SELECT COUNT(*) as cnt FROM file_snapshots').get() as { cnt: number }).cnt
-  if (total <= limit) return
-  d.prepare('DELETE FROM file_snapshots WHERE id NOT IN (SELECT id FROM file_snapshots ORDER BY created_at DESC LIMIT ?)').run(limit)
+  // 按文件路径分组，每个文件独立保留 maxVersions 条
+  const paths = d.prepare('SELECT DISTINCT file_path FROM file_snapshots').all() as { file_path: string }[]
+  for (const { file_path } of paths) {
+    const cnt = (d.prepare('SELECT COUNT(*) as cnt FROM file_snapshots WHERE file_path = ?').get(file_path) as { cnt: number }).cnt
+    if (cnt <= maxVersions) continue
+    d.prepare(`
+      DELETE FROM file_snapshots
+      WHERE file_path = ?
+      AND id NOT IN (SELECT id FROM file_snapshots WHERE file_path = ? ORDER BY created_at DESC LIMIT ?)
+    `).run(file_path, file_path, maxVersions)
+  }
 }
 
 export function listFileSnapshots(limit = 50, offset = 0): FileSnapshotRow[] {
