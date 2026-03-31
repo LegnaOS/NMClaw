@@ -381,16 +381,26 @@ app.post('/api/chat', async (c) => {
   if (!targetAgent) return c.json({ error: 'no agents available' }, 400)
 
   return streamSSE(c, async (stream) => {
+    const abortController = new AbortController()
+    stream.onAbort(() => {
+      console.log('[chat] client disconnected, aborting')
+      abortController.abort()
+    })
     try {
       // Send agent info marker
       await stream.writeSSE({ data: `[AGENT_INFO:${targetAgent.id}|${targetAgent.name}]` })
 
-      for await (const chunk of streamTask(targetAgent.id, messages)) {
+      for await (const chunk of streamTask(targetAgent.id, messages, undefined, abortController.signal)) {
+        if (abortController.signal.aborted) break
         await stream.writeSSE({ data: JSON.stringify(chunk) })
       }
-      await stream.writeSSE({ data: '[DONE]' })
+      if (!abortController.signal.aborted) {
+        await stream.writeSSE({ data: '[DONE]' })
+      }
     } catch (err) {
-      await stream.writeSSE({ data: `[ERROR] ${err instanceof Error ? err.message : err}` })
+      if (!abortController.signal.aborted) {
+        await stream.writeSSE({ data: `[ERROR] ${err instanceof Error ? err.message : err}` })
+      }
     }
   })
 })

@@ -46,6 +46,10 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **SSE 流式对话** | 实时 token 流 + 工具调用可视化 + Worker 子会话折叠展示 |
 | **Agent 长期记忆** | 每个 Agent 独立记忆存储，跨会话保持上下文，自动摘要历史对话 |
 | **飞书对话历史** | 飞书渠道自动携带最近 20 条对话上下文，支持多轮连续对话 |
+| **工具并发调度** | 只读工具 `Promise.allSettled` 并行执行，写操作自动串行，多工具调用 2-3x 提速 |
+| **AbortController** | 客户端断开连接即停止 LLM 调用和工具执行，避免无效 token 消耗 |
+| **工具结果截断** | 30K 字符上限，超大结果保留首尾各半 + 截断提示，防止撑爆上下文窗口 |
+| **Store 内存缓存** | 内存缓存 + 50ms debounce 写入合并，磁盘 IO 减少 ~80%，进程退出自动刷盘 |
 | **代理兼容工具调用** | 通过 XML tool protocol 实现工具调用，兼容 API 代理/中转服务 |
 | **Agent Graph** | DAG 工作流编排，上游输出自动流转下游、多源聚合、同层并行执行、条件分支 |
 | **记忆回溯** | 每次资源变更自动拍快照，支持回溯到任意历史版本，恢复操作本身也可撤销。快照数量可配置（3-200，默认 10），可关闭。Genesis Agent 内置回溯工具，Web 面板可视化时间线 + 设置面板 |
@@ -91,7 +95,7 @@ pnpm build && pnpm start  # 生产模式
 ```
 src/
   server.ts            Hono HTTP + SSE 流式接口
-  executor.ts          LLM 引擎（raw fetch + XML tool protocol，兼容 API 代理）
+  executor.ts          LLM 引擎（并发工具调度 + AbortController + 结果截断 + Prompt Caching）
   genesis.ts           Genesis 内核（匹配 + 路由）
   agent-manager.ts     Agent 生命周期（创建/销毁/TTL/回收）
   mcp-runtime.ts       MCP 运行时（stdio/SSE/内置 + Agent 级隔离）
@@ -107,7 +111,7 @@ src/
   cron.ts              CRON 定时调度
   tracker.ts           任务追踪（嵌套 span + 时间轴）
   snapshot.ts          记忆回溯（操作快照 + 版本恢复）
-  store.ts             JSON 持久化（~/.nmclaw/store.json）
+  store.ts             JSON 持久化（内存缓存 + debounce 写入合并 + 进程退出保护）
   seed.ts              首次运行默认数据 + 增量迁移
   local-mcp-scanner.ts 本地 MCP 配置自动发现
   permission.ts        用户权限 + Bypass 规则

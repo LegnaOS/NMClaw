@@ -11,6 +11,7 @@ import type { ToolDef } from './mcp-runtime.js'
 
 const MAX_TOOL_ROUNDS = 10
 const DISPATCH_CONTEXT_LIMIT = 4 // max recent messages to pass to worker (memory covers the rest)
+const MAX_TOOL_RESULT_CHARS = 30000 // 工具结果大小上限，防止撑爆上下文
 
 // ─── Response Dedup Cache ───
 // 完全相同的 (agentId + messages) 在短时间内命中缓存，跳过 API 调用
@@ -64,6 +65,103 @@ export type SpanEmitter = (span: {
 
 function toolResultPreview(content: string): string {
   return content.replace(/[\n\r]+/g, ' ').replace(/[\[\]]/g, '').slice(0, 200)
+}
+
+/** 截断过大的工具结果，保留首尾各半 */
+function truncateToolResult(content: string): string {
+  if (content.length <= MAX_TOOL_RESULT_CHARS) return content
+  const half = Math.floor(MAX_TOOL_RESULT_CHARS / 2)
+  return content.slice(0, half) +
+    `\n\n...[结果已截断，原始长度 ${content.length} 字符]...\n\n` +
+    content.slice(-half)
+}
+
+// ─── 并发工具调度 ───
+
+interface ToolCallItem {
+  name: string
+  arguments: Record<string, unknown>
+  /** OpenAI tool_call_id（仅 OpenAI 路径使用） */
+  callId?: string
+}
+
+interface ToolCallResult {
+  call: ToolCallItem
+  result: { content: string; isError?: boolean }
+  durationMs: number
+}
+
+/** 将工具调用分区为可并行批次和必须串行的批次 */
+function partitionToolCalls(calls: ToolCallItem[], tools: ToolDef[]): ToolCallItem[][] {
+  if (calls.length <= 1) return [calls]
+  const safe: ToolCallItem[] = []
+  const batches: ToolCallItem[][] = []
+  for (const tc of calls) {
+    const def = tools.find(t => t.name === tc.name)
+    // dispatch_to_agent 绝对串行；concurrencySafe === false 串行；其余并行
+    if (tc.name === 'dispatch_to_agent' || def?.concurrencySafe === false) {
+      if (safe.length > 0) { batches.push([...safe]); safe.length = 0 }
+      batches.push([tc])
+    } else {
+      safe.push(tc)
+    }
+  }
+  if (safe.length > 0) batches.unshift(safe) // 安全工具放最前面并行执行
+  return batches
+}
+
+/** 并发执行一批工具调用（不含 dispatch） */
+async function executeBatchConcurrently(
+  batch: ToolCallItem[], tools: ToolDef[], signal?: AbortSignal,
+): Promise<ToolCallResult[]> {
+  const results = await Promise.allSettled(batch.map(async (tc): Promise<ToolCallResult> => {
+    if (signal?.aborted) return { call: tc, result: { content: '已取消', isError: true }, durationMs: 0 }
+    const start = Date.now()
+    const mcpId = findToolMcp(tools, tc.name)
+    if (!mcpId) return { call: tc, result: { content: `Tool not found: ${tc.name}`, isError: true }, durationMs: Date.now() - start }
+    const r = await callTool(mcpId, tc.name, tc.arguments)
+    return { call: tc, result: { content: truncateToolResult(r.content), isError: r.isError }, durationMs: Date.now() - start }
+  }))
+  return results.map((r, i) =>
+    r.status === 'fulfilled' ? r.value : { call: batch[i], result: { content: `Error: ${(r as PromiseRejectedResult).reason}`, isError: true }, durationMs: 0 }
+  )
+}
+
+/** 公共 dispatch_to_agent 流式处理 */
+async function* streamDispatch(
+  tc: ToolCallItem, messages: ChatMessage[], channelCtx?: ChannelContext, signal?: AbortSignal,
+): AsyncGenerator<string, string> {
+  const targetId = tc.arguments.agentId as string
+  const prompt = tc.arguments.prompt as string
+  if (!targetId || !prompt) {
+    yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
+    return '缺少 agentId 或 prompt'
+  }
+  const targetAgent = getAgent(targetId)
+  const agentName = targetAgent?.name || targetId
+
+  yield `[DISPATCH_START:${targetId}|${agentName}]`
+  let workerOutput = ''
+  try {
+    const recentCtx = messages.slice(-DISPATCH_CONTEXT_LIMIT)
+    const workerMessages: ChatMessage[] = [...recentCtx, { role: 'user' as const, content: prompt }]
+    for await (const chunk of streamTask(targetId, workerMessages, channelCtx, signal)) {
+      if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') || chunk.startsWith('[FILE_OUTPUT:')) {
+        yield chunk; continue
+      }
+      if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
+          chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
+      if (chunk) { workerOutput += chunk; yield chunk }
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    workerOutput = `执行失败: ${errMsg}`
+    yield workerOutput
+  }
+  yield `[DISPATCH_END:${agentName}]`
+  const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
+  yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
+  return workerOutput.trim() || '(无回复)'
 }
 
 function buildSystemPrompt(agentId: string) {
@@ -163,7 +261,7 @@ function applyAnthropicCacheControl(system: string, messages: any[]): { systemBl
 }
 
 async function rawAnthropicRequest(
-  model: ModelConfig, system: string, messages: any[], maxTokens: number, temperature?: number,
+  model: ModelConfig, system: string, messages: any[], maxTokens: number, temperature?: number, signal?: AbortSignal,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }> {
   const apiKey = getApiKey(model)
   const baseUrl = model.config.baseUrl || 'https://api.anthropic.com'
@@ -187,6 +285,7 @@ async function rawAnthropicRequest(
       'anthropic-beta': 'prompt-caching-2024-07-31',
     },
     body: JSON.stringify(body),
+    signal,
   })
 
   if (!res.ok) {
@@ -282,8 +381,9 @@ async function callAnthropicWithTools(
         continue
       }
       const callResult = await callTool(mcpId, tc.name, tc.arguments)
-      onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: callResult.content.slice(0, 500), durationMs: Date.now() - toolStart, status: callResult.isError ? 'error' : 'success' })
-      toolResultTexts.push(`<tool_result name="${tc.name}"${callResult.isError ? ' error="true"' : ''}>${callResult.content}</tool_result>`)
+      const truncated = truncateToolResult(callResult.content)
+      onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: truncated.slice(0, 500), durationMs: Date.now() - toolStart, status: callResult.isError ? 'error' : 'success' })
+      toolResultTexts.push(`<tool_result name="${tc.name}"${callResult.isError ? ' error="true"' : ''}>${truncated}</tool_result>`)
     }
 
     anthropicMsgs.push({ role: 'assistant', content: result.text })
@@ -347,8 +447,9 @@ async function callOpenAIWithTools(
         continue
       }
       const result = await callTool(mcpId, fn.name, args)
-      onSpan?.({ type: 'tool', name: fn.name, input: fn.arguments.slice(0, 300), output: result.content.slice(0, 500), durationMs: Date.now() - toolStart, status: result.isError ? 'error' : 'success' })
-      openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: result.content })
+      const truncated = truncateToolResult(result.content)
+      onSpan?.({ type: 'tool', name: fn.name, input: fn.arguments.slice(0, 300), output: truncated.slice(0, 500), durationMs: Date.now() - toolStart, status: result.isError ? 'error' : 'success' })
+      openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: truncated })
     }
   }
 
@@ -365,7 +466,7 @@ export interface ChannelContext {
   channelType: string
 }
 
-export async function* streamTask(agentId: string, messages: ChatMessage[], channelCtx?: ChannelContext): AsyncGenerator<string> {
+export async function* streamTask(agentId: string, messages: ChatMessage[], channelCtx?: ChannelContext, signal?: AbortSignal): AsyncGenerator<string> {
   const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
   const tools = await getToolsForAgent(agent.mcpIds)
 
@@ -390,8 +491,8 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
   // Collect full assistant response for memory persistence
   let fullResponse = ''
   const innerGen = model.provider === 'anthropic'
-    ? streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
-    : streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx)
+    ? streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx, signal)
+    : streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx, signal)
 
   for await (const chunk of innerGen) {
     // Only collect visible text, skip meta/control tags
@@ -434,7 +535,7 @@ async function augmentUserLinks(messages: ChatMessage[]): Promise<ChatMessage[]>
 }
 
 async function* streamAnthropicWithTools(
-  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], channelCtx?: ChannelContext,
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], channelCtx?: ChannelContext, signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const params = model.config.defaultParams ?? {}
   const maxTokens = (params.max_tokens as number) ?? 4096
@@ -444,10 +545,13 @@ async function* streamAnthropicWithTools(
   let totalTokens = 0
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (signal?.aborted) break
+
     let result
     try {
-      result = await rawAnthropicRequest(model, fullSystem, anthropicMsgs, maxTokens, temperature)
+      result = await rawAnthropicRequest(model, fullSystem, anthropicMsgs, maxTokens, temperature, signal)
     } catch (err) {
+      if (signal?.aborted) break
       yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
       break
     }
@@ -459,94 +563,61 @@ async function* streamAnthropicWithTools(
 
     console.log(`[stream-anthropic] round=${round} text=${cleanText.length}chars tools=${toolCalls.length}`)
 
-    // If no tool calls, yield text and done
     if (toolCalls.length === 0) {
       if (cleanText) yield cleanText
       break
     }
 
-    // Has tool calls — suppress narration text (model shouldn't talk while calling tools)
     const hasDispatch = toolCalls.some(tc => tc.name === 'dispatch_to_agent')
 
-    // Execute tools
+    // 并发调度工具调用
+    const items: ToolCallItem[] = toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments }))
+    const batches = partitionToolCalls(items, tools)
     const toolResultTexts: string[] = []
-    for (const tc of toolCalls) {
-      yield `[TOOL_CALL:${tc.name}]`
 
-      // Special handling: dispatch_to_agent streams worker output in real-time
-      if (tc.name === 'dispatch_to_agent') {
+    for (const batch of batches) {
+      if (signal?.aborted) break
+
+      // dispatch_to_agent 走流式处理
+      if (batch.length === 1 && batch[0].name === 'dispatch_to_agent') {
+        const tc = batch[0]
+        yield `[TOOL_CALL:${tc.name}]`
+        let dispatchResult = ''
+        for await (const chunk of streamDispatch(tc, messages, channelCtx, signal)) {
+          yield chunk
+          dispatchResult = chunk // streamDispatch 的 return 值通过最后一个 yield 之后
+        }
+        // streamDispatch return 的值无法通过 for-await 获取，用 toolResultTexts 记录
+        // 从最后的 TOOL_RESULT 标签中提取不可靠，直接用 workerOutput 逻辑重建
+        // 实际上 streamDispatch 已经 yield 了 TOOL_RESULT，这里只需要记录给 LLM 的结果
         const targetId = tc.arguments.agentId as string
         const prompt = tc.arguments.prompt as string
         if (!targetId || !prompt) {
-          yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
           toolResultTexts.push(`<tool_result name="${tc.name}" error="true">缺少 agentId 或 prompt</tool_result>`)
-          continue
+        } else {
+          // dispatch 结果已经通过 streamDispatch yield 给用户了，这里记录给 LLM
+          toolResultTexts.push(`<tool_result name="${tc.name}">(已委派执行)</tool_result>`)
         }
-        const targetAgent = getAgent(targetId)
-        const agentName = targetAgent?.name || targetId
-
-        yield `[DISPATCH_START:${targetId}|${agentName}]`
-        let workerOutput = ''
-        try {
-          // Pass only recent context — worker's long-term memory fills the rest
-          const recentCtx = messages.slice(-DISPATCH_CONTEXT_LIMIT)
-          const workerMessages: ChatMessage[] = [
-            ...recentCtx,
-            { role: 'user' as const, content: prompt },
-          ]
-          for await (const chunk of streamTask(targetId, workerMessages, channelCtx)) {
-            if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
-                chunk.startsWith('[FILE_OUTPUT:')) {
-              yield chunk
-              continue
-            }
-            if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
-                chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
-            if (chunk) {
-              workerOutput += chunk
-              yield chunk
-            }
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          workerOutput = `执行失败: ${errMsg}`
-          yield workerOutput
-        }
-        yield `[DISPATCH_END:${agentName}]`
-
-        const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
-        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
-        toolResultTexts.push(`<tool_result name="${tc.name}">${workerOutput.trim() || '(无回复)'}</tool_result>`)
         continue
       }
 
-      const mcpId = findToolMcp(tools, tc.name)
-      if (!mcpId) {
-        yield `[TOOL_RESULT:${tc.name}|Error: 工具未找到]`
-        toolResultTexts.push(`<tool_result name="${tc.name}" error="true">Tool not found: ${tc.name}</tool_result>`)
-        continue
-      }
-      try {
-        const callResult = await callTool(mcpId, tc.name, tc.arguments)
-        if ((tc.name === 'write_file' || tc.name === 'send_file') && tc.arguments.path && !callResult.isError) {
-          yield `[FILE_OUTPUT:${tc.arguments.path}]`
+      // 普通工具：并发执行
+      for (const tc of batch) yield `[TOOL_CALL:${tc.name}]`
+      const results = await executeBatchConcurrently(batch, tools, signal)
+      for (const r of results) {
+        if ((r.call.name === 'write_file' || r.call.name === 'send_file') && r.call.arguments.path && !r.result.isError) {
+          yield `[FILE_OUTPUT:${r.call.arguments.path}]`
         }
-        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(callResult.content)}]`
-        toolResultTexts.push(`<tool_result name="${tc.name}"${callResult.isError ? ' error="true"' : ''}>${callResult.content}</tool_result>`)
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        yield `[TOOL_RESULT:${tc.name}|Error: ${errMsg}]`
-        toolResultTexts.push(`<tool_result name="${tc.name}" error="true">Error: ${errMsg}</tool_result>`)
+        yield `[TOOL_RESULT:${r.call.name}|${toolResultPreview(r.result.content)}]`
+        toolResultTexts.push(`<tool_result name="${r.call.name}"${r.result.isError ? ' error="true"' : ''}>${r.result.content}</tool_result>`)
       }
     }
 
-    // Dispatch completed — break loop, don't let Genesis summarize
     if (hasDispatch) {
       console.log(`[stream-anthropic] dispatch completed, breaking loop`)
       break
     }
 
-    // Feed tool results back as XML
     anthropicMsgs.push({ role: 'assistant', content: result.text })
     anthropicMsgs.push({ role: 'user', content: toolResultTexts.join('\n') })
   }
@@ -554,7 +625,7 @@ async function* streamAnthropicWithTools(
 }
 
 async function* streamOpenAIWithTools(
-  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], _channelCtx?: ChannelContext,
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[], _channelCtx?: ChannelContext, signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const client = new OpenAI({
     apiKey: getApiKey(model),
@@ -568,6 +639,8 @@ async function* streamOpenAIWithTools(
   let totalTokens = 0
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (signal?.aborted) break
+
     let stream
     try {
       stream = await client.chat.completions.create({
@@ -580,14 +653,16 @@ async function* streamOpenAIWithTools(
         stream_options: { include_usage: true },
       })
     } catch (err) {
+      if (signal?.aborted) break
       yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
       break
     }
 
     let finishReason = ''
-    const toolCalls = new Map<number, { id: string; name: string; arguments: string }>()
+    const streamedToolCalls = new Map<number, { id: string; name: string; arguments: string }>()
 
     for await (const chunk of stream) {
+      if (signal?.aborted) break
       const choice = chunk.choices[0]
       if (!choice) continue
 
@@ -597,10 +672,10 @@ async function* streamOpenAIWithTools(
 
       if (choice.delta?.tool_calls) {
         for (const tc of choice.delta.tool_calls) {
-          if (!toolCalls.has(tc.index)) {
-            toolCalls.set(tc.index, { id: tc.id || '', name: tc.function?.name || '', arguments: '' })
+          if (!streamedToolCalls.has(tc.index)) {
+            streamedToolCalls.set(tc.index, { id: tc.id || '', name: tc.function?.name || '', arguments: '' })
           }
-          const existing = toolCalls.get(tc.index)!
+          const existing = streamedToolCalls.get(tc.index)!
           if (tc.id) existing.id = tc.id
           if (tc.function?.name) existing.name = tc.function.name
           if (tc.function?.arguments) existing.arguments += tc.function.arguments
@@ -608,94 +683,60 @@ async function* streamOpenAIWithTools(
       }
 
       if (choice.finish_reason) finishReason = choice.finish_reason
-      // Capture usage from final chunk
       const usage = (chunk as any).usage
       if (usage) totalTokens += (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)
     }
 
-    if (finishReason !== 'tool_calls' || toolCalls.size === 0) break
+    if (finishReason !== 'tool_calls' || streamedToolCalls.size === 0) break
 
     // Build assistant message with tool calls
+    const tcValues = [...streamedToolCalls.values()]
     const assistantMsg: any = {
       role: 'assistant',
       content: null,
-      tool_calls: [...toolCalls.values()].map((tc) => ({
-        id: tc.id,
-        type: 'function',
+      tool_calls: tcValues.map((tc) => ({
+        id: tc.id, type: 'function',
         function: { name: tc.name, arguments: tc.arguments },
       })),
     }
     openaiMsgs.push(assistantMsg)
 
-    // Process each tool call
-    for (const tc of toolCalls.values()) {
-      yield `[TOOL_CALL:${tc.name}]`
+    // 构建 ToolCallItem 列表并分区调度
+    const items: ToolCallItem[] = tcValues.map(tc => {
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(tc.arguments) } catch { /* empty */ }
+      return { name: tc.name, arguments: args, callId: tc.id }
+    })
+    const batches = partitionToolCalls(items, tools)
 
-      // Special handling: dispatch_to_agent streams worker output with conversation history
-      if (tc.name === 'dispatch_to_agent') {
-        const targetId = args.agentId as string
-        const prompt = args.prompt as string
-        if (!targetId || !prompt) {
-          openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: '缺少 agentId 或 prompt' })
-          yield `[TOOL_RESULT:${tc.name}|Error: 缺少 agentId 或 prompt]`
-          continue
-        }
-        const targetAgent = getAgent(targetId)
-        const agentName = targetAgent?.name || targetId
+    for (const batch of batches) {
+      if (signal?.aborted) break
 
-        yield `[DISPATCH_START:${targetId}|${agentName}]`
-        let workerOutput = ''
-        try {
-          // Pass only recent context — worker's long-term memory fills the rest
-          const recentCtx = messages.slice(-DISPATCH_CONTEXT_LIMIT)
-          const workerMessages: ChatMessage[] = [
-            ...recentCtx,
-            { role: 'user' as const, content: prompt },
-          ]
-          for await (const chunk of streamTask(targetId, workerMessages, _channelCtx)) {
-            if (chunk.startsWith('[TOOL_CALL:') || chunk.startsWith('[TOOL_RESULT:') ||
-                chunk.startsWith('[FILE_OUTPUT:')) {
-              yield chunk
-              continue
-            }
-            if (chunk.startsWith('[STREAM_META:') || chunk.startsWith('[AGENT_INFO:') ||
-                chunk.startsWith('[DISPATCH_START:') || chunk.startsWith('[DISPATCH_END:')) continue
-            if (chunk) {
-              workerOutput += chunk
-              yield chunk
-            }
+      // dispatch_to_agent 走流式处理
+      if (batch.length === 1 && batch[0].name === 'dispatch_to_agent') {
+        const tc = batch[0]
+        yield `[TOOL_CALL:${tc.name}]`
+        let dispatchOutput = ''
+        for await (const chunk of streamDispatch(tc, messages, _channelCtx, signal)) {
+          if (!chunk.startsWith('[DISPATCH_END:') && !chunk.startsWith('[TOOL_RESULT:') &&
+              !chunk.startsWith('[DISPATCH_START:') && !chunk.startsWith('[TOOL_CALL:')) {
+            dispatchOutput += chunk
           }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err)
-          workerOutput = `执行失败: ${errMsg}`
-          yield workerOutput
+          yield chunk
         }
-        yield `[DISPATCH_END:${agentName}]`
-
-        const summary = (workerOutput.trim() || '(无回复)').slice(0, 200)
-        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(summary)}]`
-        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: workerOutput.trim() || '(无回复)' })
+        openaiMsgs.push({ role: 'tool', tool_call_id: tc.callId, content: dispatchOutput.trim() || '(已委派执行)' })
         continue
       }
 
-      const mcpId = findToolMcp(tools, tc.name)
-      if (!mcpId) {
-        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: `Tool not found: ${tc.name}` })
-        continue
-      }
-      try {
-        const result = await callTool(mcpId, tc.name, args)
-        if ((tc.name === 'write_file' || tc.name === 'send_file') && args.path && !result.isError) {
-          yield `[FILE_OUTPUT:${args.path}]`
+      // 普通工具：并发执行
+      for (const tc of batch) yield `[TOOL_CALL:${tc.name}]`
+      const results = await executeBatchConcurrently(batch, tools, signal)
+      for (const r of results) {
+        if ((r.call.name === 'write_file' || r.call.name === 'send_file') && r.call.arguments.path && !r.result.isError) {
+          yield `[FILE_OUTPUT:${r.call.arguments.path}]`
         }
-        yield `[TOOL_RESULT:${tc.name}|${toolResultPreview(result.content)}]`
-        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: result.content })
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        yield `[TOOL_RESULT:${tc.name}|Error: ${errMsg}]`
-        openaiMsgs.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` })
+        yield `[TOOL_RESULT:${r.call.name}|${toolResultPreview(r.result.content)}]`
+        openaiMsgs.push({ role: 'tool', tool_call_id: r.call.callId, content: r.result.content })
       }
     }
   }

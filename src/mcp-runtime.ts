@@ -18,6 +18,8 @@ export interface ToolDef {
   description: string
   inputSchema: Record<string, unknown>
   mcpId: string
+  concurrencySafe?: boolean  // 是否可并发执行，默认 true（undefined 视为 true）
+  readOnly?: boolean         // 是否只读操作
 }
 
 export interface ToolResult {
@@ -639,6 +641,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           timezone: { type: 'string', description: '时区名称，如 Asia/Shanghai, UTC, America/New_York。默认 Asia/Shanghai' },
         },
       },
+      concurrencySafe: true,
+      readOnly: true,
     }],
     call: builtinTime,
   },
@@ -653,6 +657,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
         },
         required: ['city'],
       },
+      concurrencySafe: true,
+      readOnly: true,
     }],
     call: builtinWeather,
   },
@@ -666,6 +672,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { path: { type: 'string', description: '文件绝对路径' } },
           required: ['path'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'list_directory',
@@ -675,6 +683,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { path: { type: 'string', description: '目录绝对路径' } },
           required: ['path'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'write_file',
@@ -687,6 +697,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['path', 'content'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'get_file_info',
@@ -696,6 +708,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { path: { type: 'string', description: '文件或目录的绝对路径' } },
           required: ['path'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'copy_file',
@@ -708,6 +722,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['source', 'destination'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'move_file',
@@ -720,6 +736,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['source', 'destination'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'send_file',
@@ -731,6 +749,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['path'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'delete_file',
@@ -743,6 +763,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['path'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
     ],
     call: builtinFilesystem,
@@ -759,6 +781,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
         },
         required: ['command'],
       },
+      concurrencySafe: false,
+      readOnly: false,
     }],
     call: builtinShell,
   },
@@ -775,26 +799,36 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['agentId', 'prompt'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'list_agents',
         description: '列出平台上所有 Agent（包括名称、状态、模型等信息）',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'list_models',
         description: '列出平台上所有可用的 AI 模型',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'list_skills',
         description: '列出平台上所有可用的技能',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'list_mcps',
         description: '列出平台上所有可用的 MCP 工具',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'create_agent',
@@ -812,6 +846,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['name', 'description', 'modelId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'modify_agent',
@@ -830,6 +866,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['agentId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'destroy_agent',
@@ -839,6 +877,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { agentId: { type: 'string', description: '要销毁的 Agent ID' } },
           required: ['agentId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'create_cron_job',
@@ -853,11 +893,15 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['cron', 'agentId', 'prompt'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'list_cron_jobs',
         description: '列出所有定时任务',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'remove_cron_job',
@@ -867,6 +911,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { jobId: { type: 'string', description: '定时任务 ID' } },
           required: ['jobId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'import_skill_url',
@@ -876,11 +922,15 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           properties: { url: { type: 'string', description: '技能文件的 URL（如 https://evomap.ai/skill.md）' } },
           required: ['url'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'list_channels',
         description: '列出所有消息渠道（飞书等），用于查看可发送文件的目标渠道',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'send_file_to_channel',
@@ -893,6 +943,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['channelId', 'filePath'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
     ],
     call: builtinPlatform,
@@ -910,6 +962,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['query'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'fetch_url',
@@ -923,6 +977,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['url'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'scrape_page',
@@ -936,6 +992,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['url'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
     ],
     call: (name: string, input: Record<string, unknown>) => {
@@ -953,11 +1011,15 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
         name: 'evomap_register',
         description: '注册当前节点到 EvoMap 协作进化网络。首次注册后返回 claim_url，用户访问该链接即可绑定节点到自己的 EvoMap 账户。已注册则返回现有状态',
         inputSchema: { type: 'object', properties: {}, required: [] },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'evomap_status',
         description: '查看 EvoMap 节点状态：是否已注册、node_id、积分余额、上次心跳时间、claim_url 等',
         inputSchema: { type: 'object', properties: {}, required: [] },
+        concurrencySafe: true,
+        readOnly: true,
       },
     ],
     call: async (name: string, _input: Record<string, unknown>) => {
@@ -1010,6 +1072,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['kind'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'njggzy_detail',
@@ -1022,6 +1086,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['kind', 'url'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'njggzy_query_tenders',
@@ -1033,6 +1099,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
             limit: { type: 'number', description: '返回条数（默认50）' },
           },
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'njggzy_query_awards',
@@ -1044,6 +1112,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
             limit: { type: 'number', description: '返回条数（默认50）' },
           },
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'njggzy_match',
@@ -1054,11 +1124,15 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
             keyword: { type: 'string', description: '可选，项目名称关键词过滤' },
           },
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'njggzy_stats',
         description: '查看招标信息数据库统计：招标数量、中标数量、已匹配数量',
         inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
       },
     ],
     call: builtinNjggzy,
@@ -1074,6 +1148,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
             limit: { type: 'number', description: '返回条数（默认 20）' },
           },
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'restore_snapshot',
@@ -1085,6 +1161,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['snapshotId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
       {
         name: 'diff_snapshot',
@@ -1096,6 +1174,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['snapshotId'],
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'list_file_snapshots',
@@ -1106,6 +1186,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
             limit: { type: 'number', description: '返回条数（默认 20）' },
           },
         },
+        concurrencySafe: true,
+        readOnly: true,
       },
       {
         name: 'restore_file_snapshot',
@@ -1117,6 +1199,8 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
           },
           required: ['snapshotId'],
         },
+        concurrencySafe: false,
+        readOnly: false,
       },
     ],
     call: builtinSnapshot,

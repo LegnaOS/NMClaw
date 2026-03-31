@@ -11,7 +11,7 @@
 import Database from 'better-sqlite3'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { getStoreDir } from './store.js'
+import { getStoreDir, invalidateCache } from './store.js'
 import type { SnapshotConfig } from './types.js'
 
 const DEFAULT_CONFIG: SnapshotConfig = { enabled: true, maxVersions: 10 }
@@ -186,6 +186,9 @@ export function restoreSnapshot(id: number): { ok: boolean; error?: string } {
   // 覆写 store.json
   const storeFile = join(getStoreDir(), 'store.json')
   writeFileSync(storeFile, snap.store_json, 'utf-8')
+
+  // 清除内存缓存，确保下次 loadStore 读到恢复后的数据
+  invalidateCache()
 
   console.log(`[snapshot] restored to #${id}`)
   return { ok: true }
