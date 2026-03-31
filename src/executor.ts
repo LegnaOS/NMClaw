@@ -194,7 +194,7 @@ function getApiKey(model: ModelConfig): string {
   return key
 }
 
-// ─── XML Tool Protocol (works through proxy that strips native tools) ───
+// ─── XML Tool Protocol (fallback for proxies that strip native tools) ───
 
 function buildToolSystemPrompt(baseSystem: string, tools: ToolDef[]): string {
   if (tools.length === 0) return baseSystem
@@ -231,6 +231,221 @@ function parseToolCalls(text: string): { name: string; arguments: Record<string,
 
 function stripToolCallTags(text: string): string {
   return text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim()
+}
+
+// ─── Anthropic Native tool_use (参考 Claude Code 架构) ───
+// 使用 Anthropic API 原生 tool_use 而非 XML protocol
+// 优势：减少 ~500-2000 tokens system prompt、结构化解析更可靠、配合 prompt caching 更高效
+// 回退：ModelConfig.config.defaultParams.xmlToolProtocol = true 可切回 XML 模式
+
+/** 是否使用原生 tool_use（默认 true，除非显式设置 xmlToolProtocol） */
+function useNativeToolUse(model: ModelConfig): boolean {
+  return !(model.config.defaultParams as any)?.xmlToolProtocol
+}
+
+/** 构建 Anthropic 原生 tools 数组 */
+function toAnthropicTools(tools: ToolDef[]): any[] {
+  return tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema,
+  }))
+}
+
+/** 从 Anthropic 响应 content 数组中提取文本和工具调用 */
+function parseNativeContent(content: any[]): {
+  text: string
+  toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[]
+} {
+  let text = ''
+  const toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = []
+  for (const block of content) {
+    if (block.type === 'text') text += block.text
+    else if (block.type === 'tool_use') {
+      toolCalls.push({ id: block.id, name: block.name, arguments: block.input ?? {} })
+    }
+  }
+  return { text, toolCalls }
+}
+
+/** 构建 Anthropic 原生 tool_result 消息 */
+function buildNativeToolResults(results: { toolUseId: string; content: string; isError?: boolean }[]): any {
+  return {
+    role: 'user',
+    content: results.map(r => ({
+      type: 'tool_result',
+      tool_use_id: r.toolUseId,
+      content: r.content,
+      ...(r.isError ? { is_error: true } : {}),
+    })),
+  }
+}
+
+/** Anthropic 原生 API 请求（支持 tool_use） */
+async function nativeAnthropicRequest(
+  model: ModelConfig, system: string, messages: any[], tools: ToolDef[],
+  maxTokens: number, temperature?: number, signal?: AbortSignal,
+): Promise<{
+  content: any[]; stopReason: string
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number
+}> {
+  const apiKey = getApiKey(model)
+  const baseUrl = model.config.baseUrl || 'https://api.anthropic.com'
+
+  const { systemBlocks, cachedMessages } = applyAnthropicCacheControl(system, messages)
+
+  const body: any = {
+    model: model.name,
+    max_tokens: maxTokens,
+    system: systemBlocks,
+    messages: cachedMessages,
+  }
+  if (tools.length > 0) body.tools = toAnthropicTools(tools)
+  if (temperature != null) body.temperature = temperature
+
+  const res = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+    },
+    body: JSON.stringify(body),
+    signal,
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Anthropic API error ${res.status}: ${err}`)
+  }
+
+  const data = await res.json() as any
+  const cacheRead = data.usage?.cache_read_input_tokens ?? 0
+  const cacheWrite = data.usage?.cache_creation_input_tokens ?? 0
+  if (cacheRead > 0 || cacheWrite > 0) {
+    console.log(`[anthropic-native] cache read=${cacheRead} write=${cacheWrite} input=${data.usage?.input_tokens ?? 0}`)
+  }
+  return {
+    content: data.content ?? [],
+    stopReason: data.stop_reason ?? 'end_turn',
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+  }
+}
+
+/** Anthropic 原生 SSE 流式请求（支持 tool_use） */
+async function* streamAnthropicNative(
+  model: ModelConfig, system: string, messages: any[], tools: ToolDef[],
+  maxTokens: number, temperature?: number, signal?: AbortSignal,
+): AsyncGenerator<{ type: 'text'; text: string } | { type: 'tool_use_complete'; id: string; name: string; input: Record<string, unknown> } | { type: 'done'; stopReason: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }> {
+  const apiKey = getApiKey(model)
+  const baseUrl = model.config.baseUrl || 'https://api.anthropic.com'
+
+  const { systemBlocks, cachedMessages } = applyAnthropicCacheControl(system, messages)
+
+  const body: any = {
+    model: model.name,
+    max_tokens: maxTokens,
+    system: systemBlocks,
+    messages: cachedMessages,
+    stream: true,
+  }
+  if (tools.length > 0) body.tools = toAnthropicTools(tools)
+  if (temperature != null) body.temperature = temperature
+
+  const res = await fetch(`${baseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+    },
+    body: JSON.stringify(body),
+    signal,
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Anthropic API error ${res.status}: ${err}`)
+  }
+
+  // 解析 SSE 流
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0
+  let stopReason = 'end_turn'
+
+  // 当前正在构建的 tool_use block
+  const toolBlocks = new Map<number, { id: string; name: string; inputJson: string }>()
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (!data || data === '[DONE]') continue
+
+      let event: any
+      try { event = JSON.parse(data) } catch { continue }
+
+      switch (event.type) {
+        case 'message_start': {
+          const u = event.message?.usage
+          if (u) {
+            inputTokens = u.input_tokens ?? 0
+            cacheReadTokens = u.cache_read_input_tokens ?? 0
+            cacheWriteTokens = u.cache_creation_input_tokens ?? 0
+          }
+          break
+        }
+        case 'content_block_start': {
+          const block = event.content_block
+          if (block?.type === 'tool_use') {
+            toolBlocks.set(event.index, { id: block.id, name: block.name, inputJson: '' })
+          }
+          break
+        }
+        case 'content_block_delta': {
+          const delta = event.delta
+          if (delta?.type === 'text_delta' && delta.text) {
+            yield { type: 'text', text: delta.text }
+          } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+            const tb = toolBlocks.get(event.index)
+            if (tb) tb.inputJson += delta.partial_json
+          }
+          break
+        }
+        case 'content_block_stop': {
+          const tb = toolBlocks.get(event.index)
+          if (tb) {
+            let input: Record<string, unknown> = {}
+            try { input = JSON.parse(tb.inputJson) } catch { /* empty */ }
+            yield { type: 'tool_use_complete', id: tb.id, name: tb.name, input }
+            toolBlocks.delete(event.index)
+          }
+          break
+        }
+        case 'message_delta': {
+          if (event.delta?.stop_reason) stopReason = event.delta.stop_reason
+          if (event.usage?.output_tokens) outputTokens = event.usage.output_tokens
+          break
+        }
+      }
+    }
+  }
+
+  yield { type: 'done', stopReason, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens }
 }
 
 // ─── Anthropic Prompt Caching ───
@@ -351,6 +566,60 @@ async function callAnthropicWithTools(
   const params = model.config.defaultParams ?? {}
   const maxTokens = (params.max_tokens as number) ?? 4096
   const temperature = params.temperature as number | undefined
+  const native = useNativeToolUse(model)
+
+  // XML 回退路径
+  if (!native) {
+    return callAnthropicWithToolsXml(model, system, messages, tools, maxTokens, temperature, onSpan)
+  }
+
+  // ─── 原生 tool_use 路径 ───
+  const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role, content: m.content }))
+  let totalTokens = 0
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const llmStart = Date.now()
+    const result = await nativeAnthropicRequest(model, system, anthropicMsgs, tools, maxTokens, temperature)
+    const roundTokens = result.inputTokens + result.outputTokens
+    totalTokens += roundTokens
+
+    const { text, toolCalls } = parseNativeContent(result.content)
+
+    onSpan?.({ type: 'llm', name: model.name, input: messages[messages.length - 1]?.content?.slice(0, 300), output: text.slice(0, 500), tokens: roundTokens, durationMs: Date.now() - llmStart, status: 'success' })
+
+    if (toolCalls.length === 0 || result.stopReason !== 'tool_use') {
+      return { content: text, tokensUsed: totalTokens }
+    }
+
+    // 执行工具
+    const toolResults: { toolUseId: string; content: string; isError?: boolean }[] = []
+    for (const tc of toolCalls) {
+      const toolStart = Date.now()
+      const mcpId = findToolMcp(tools, tc.name)
+      if (!mcpId) {
+        toolResults.push({ toolUseId: tc.id, content: `Tool not found: ${tc.name}`, isError: true })
+        onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: 'Tool not found', durationMs: Date.now() - toolStart, status: 'error' })
+        continue
+      }
+      const callResult = await callTool(mcpId, tc.name, tc.arguments)
+      const truncated = truncateToolResult(callResult.content)
+      onSpan?.({ type: 'tool', name: tc.name, input: JSON.stringify(tc.arguments).slice(0, 300), output: truncated.slice(0, 500), durationMs: Date.now() - toolStart, status: callResult.isError ? 'error' : 'success' })
+      toolResults.push({ toolUseId: tc.id, content: truncated, isError: callResult.isError })
+    }
+
+    // 原生格式：assistant content 保留原始数组，tool_result 用结构化格式
+    anthropicMsgs.push({ role: 'assistant', content: result.content })
+    anthropicMsgs.push(buildNativeToolResults(toolResults))
+  }
+
+  return { content: '[达到最大工具调用轮次]', tokensUsed: totalTokens }
+}
+
+/** XML tool protocol 回退路径（兼容 API 代理） */
+async function callAnthropicWithToolsXml(
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
+  maxTokens: number, temperature?: number, onSpan?: SpanEmitter,
+): Promise<ChatResponse> {
   const fullSystem = buildToolSystemPrompt(system, tools)
   const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role, content: m.content }))
   let totalTokens = 0
@@ -370,7 +639,6 @@ async function callAnthropicWithTools(
       return { content: cleanText, tokensUsed: totalTokens }
     }
 
-    // Process tool calls
     const toolResultTexts: string[] = []
     for (const tc of toolCalls) {
       const toolStart = Date.now()
@@ -540,6 +808,117 @@ async function* streamAnthropicWithTools(
   const params = model.config.defaultParams ?? {}
   const maxTokens = (params.max_tokens as number) ?? 4096
   const temperature = params.temperature as number | undefined
+  const native = useNativeToolUse(model)
+
+  // XML 回退路径
+  if (!native) {
+    yield* streamAnthropicWithToolsXml(model, system, messages, tools, maxTokens, temperature, channelCtx, signal)
+    return
+  }
+
+  // ─── 原生 tool_use 流式路径 ───
+  const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+  let totalTokens = 0
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (signal?.aborted) break
+
+    // 收集本轮的文本和工具调用
+    let roundText = ''
+    const roundToolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = []
+    let stopReason = 'end_turn'
+    let roundInputTokens = 0, roundOutputTokens = 0
+
+    try {
+      for await (const event of streamAnthropicNative(model, system, anthropicMsgs, tools, maxTokens, temperature, signal)) {
+        if (event.type === 'text') {
+          roundText += event.text
+          // 原生流式：实时 yield 文本（仅在没有工具调用时才对用户可见，但先收集）
+        } else if (event.type === 'tool_use_complete') {
+          roundToolCalls.push({ id: event.id, name: event.name, arguments: event.input })
+        } else if (event.type === 'done') {
+          stopReason = event.stopReason
+          roundInputTokens = event.inputTokens
+          roundOutputTokens = event.outputTokens
+          totalTokens += event.inputTokens + event.outputTokens
+          if (event.cacheReadTokens > 0 || event.cacheWriteTokens > 0) {
+            console.log(`[anthropic-native-stream] cache read=${event.cacheReadTokens} write=${event.cacheWriteTokens}`)
+          }
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) break
+      yield `\n\n[Error: ${err instanceof Error ? err.message : err}]`
+      break
+    }
+
+    console.log(`[stream-anthropic-native] round=${round} text=${roundText.length}chars tools=${roundToolCalls.length} stop=${stopReason}`)
+
+    // 没有工具调用 → yield 文本并结束
+    if (roundToolCalls.length === 0 || stopReason !== 'tool_use') {
+      if (roundText) yield roundText
+      break
+    }
+
+    // 有工具调用 → 并发调度
+    const hasDispatch = roundToolCalls.some(tc => tc.name === 'dispatch_to_agent')
+
+    const items: ToolCallItem[] = roundToolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments, callId: tc.id }))
+    const batches = partitionToolCalls(items, tools)
+    const toolResults: { toolUseId: string; content: string; isError?: boolean }[] = []
+
+    for (const batch of batches) {
+      if (signal?.aborted) break
+
+      if (batch.length === 1 && batch[0].name === 'dispatch_to_agent') {
+        const tc = batch[0]
+        yield `[TOOL_CALL:${tc.name}]`
+        let dispatchOutput = ''
+        for await (const chunk of streamDispatch(tc, messages, channelCtx, signal)) {
+          if (!chunk.startsWith('[DISPATCH_END:') && !chunk.startsWith('[TOOL_RESULT:') &&
+              !chunk.startsWith('[DISPATCH_START:') && !chunk.startsWith('[TOOL_CALL:')) {
+            dispatchOutput += chunk
+          }
+          yield chunk
+        }
+        toolResults.push({ toolUseId: tc.callId!, content: dispatchOutput.trim() || '(已委派执行)' })
+        continue
+      }
+
+      for (const tc of batch) yield `[TOOL_CALL:${tc.name}]`
+      const results = await executeBatchConcurrently(batch, tools, signal)
+      for (const r of results) {
+        if ((r.call.name === 'write_file' || r.call.name === 'send_file') && r.call.arguments.path && !r.result.isError) {
+          yield `[FILE_OUTPUT:${r.call.arguments.path}]`
+        }
+        yield `[TOOL_RESULT:${r.call.name}|${toolResultPreview(r.result.content)}]`
+        toolResults.push({ toolUseId: r.call.callId!, content: r.result.content, isError: r.result.isError })
+      }
+    }
+
+    if (hasDispatch) {
+      console.log(`[stream-anthropic-native] dispatch completed, breaking loop`)
+      break
+    }
+
+    // 构建原生格式的消息继续对话
+    // assistant content 需要包含原始的 text + tool_use blocks
+    const assistantContent: any[] = []
+    if (roundText) assistantContent.push({ type: 'text', text: roundText })
+    for (const tc of roundToolCalls) {
+      assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments })
+    }
+    anthropicMsgs.push({ role: 'assistant', content: assistantContent })
+    anthropicMsgs.push(buildNativeToolResults(toolResults))
+  }
+  if (totalTokens > 0) yield `[STREAM_META:tokens=${totalTokens}]`
+}
+
+/** XML tool protocol 流式回退路径 */
+async function* streamAnthropicWithToolsXml(
+  model: ModelConfig, system: string, messages: ChatMessage[], tools: ToolDef[],
+  maxTokens: number, temperature?: number, channelCtx?: ChannelContext, signal?: AbortSignal,
+): AsyncGenerator<string> {
   const fullSystem = buildToolSystemPrompt(system, tools)
   const anthropicMsgs: any[] = messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
   let totalTokens = 0
@@ -557,11 +936,10 @@ async function* streamAnthropicWithTools(
     }
 
     totalTokens += result.inputTokens + result.outputTokens
-
     const toolCalls = parseToolCalls(result.text)
     const cleanText = stripToolCallTags(result.text)
 
-    console.log(`[stream-anthropic] round=${round} text=${cleanText.length}chars tools=${toolCalls.length}`)
+    console.log(`[stream-anthropic-xml] round=${round} text=${cleanText.length}chars tools=${toolCalls.length}`)
 
     if (toolCalls.length === 0) {
       if (cleanText) yield cleanText
@@ -569,8 +947,6 @@ async function* streamAnthropicWithTools(
     }
 
     const hasDispatch = toolCalls.some(tc => tc.name === 'dispatch_to_agent')
-
-    // 并发调度工具调用
     const items: ToolCallItem[] = toolCalls.map(tc => ({ name: tc.name, arguments: tc.arguments }))
     const batches = partitionToolCalls(items, tools)
     const toolResultTexts: string[] = []
@@ -578,30 +954,22 @@ async function* streamAnthropicWithTools(
     for (const batch of batches) {
       if (signal?.aborted) break
 
-      // dispatch_to_agent 走流式处理
       if (batch.length === 1 && batch[0].name === 'dispatch_to_agent') {
         const tc = batch[0]
         yield `[TOOL_CALL:${tc.name}]`
-        let dispatchResult = ''
         for await (const chunk of streamDispatch(tc, messages, channelCtx, signal)) {
           yield chunk
-          dispatchResult = chunk // streamDispatch 的 return 值通过最后一个 yield 之后
         }
-        // streamDispatch return 的值无法通过 for-await 获取，用 toolResultTexts 记录
-        // 从最后的 TOOL_RESULT 标签中提取不可靠，直接用 workerOutput 逻辑重建
-        // 实际上 streamDispatch 已经 yield 了 TOOL_RESULT，这里只需要记录给 LLM 的结果
         const targetId = tc.arguments.agentId as string
         const prompt = tc.arguments.prompt as string
         if (!targetId || !prompt) {
           toolResultTexts.push(`<tool_result name="${tc.name}" error="true">缺少 agentId 或 prompt</tool_result>`)
         } else {
-          // dispatch 结果已经通过 streamDispatch yield 给用户了，这里记录给 LLM
           toolResultTexts.push(`<tool_result name="${tc.name}">(已委派执行)</tool_result>`)
         }
         continue
       }
 
-      // 普通工具：并发执行
       for (const tc of batch) yield `[TOOL_CALL:${tc.name}]`
       const results = await executeBatchConcurrently(batch, tools, signal)
       for (const r of results) {
@@ -614,7 +982,7 @@ async function* streamAnthropicWithTools(
     }
 
     if (hasDispatch) {
-      console.log(`[stream-anthropic] dispatch completed, breaking loop`)
+      console.log(`[stream-anthropic-xml] dispatch completed, breaking loop`)
       break
     }
 

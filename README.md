@@ -50,7 +50,8 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **AbortController** | 客户端断开连接即停止 LLM 调用和工具执行，避免无效 token 消耗 |
 | **工具结果截断** | 30K 字符上限，超大结果保留首尾各半 + 截断提示，防止撑爆上下文窗口 |
 | **Store 内存缓存** | 内存缓存 + 50ms debounce 写入合并，磁盘 IO 减少 ~80%，进程退出自动刷盘 |
-| **代理兼容工具调用** | 通过 XML tool protocol 实现工具调用，兼容 API 代理/中转服务 |
+| **Anthropic 原生 tool_use** | 默认使用 Anthropic 原生 tool_use API（参考 Claude Code 架构），结构化解析更可靠，system prompt 减少 500-2000 tokens。支持原生 SSE 流式 tool_use。可通过 `xmlToolProtocol: true` 回退到 XML 模式兼容 API 代理 |
+| **代理兼容工具调用** | XML tool protocol 回退模式，兼容 API 代理/中转服务 |
 | **Agent Graph** | DAG 工作流编排，上游输出自动流转下游、多源聚合、同层并行执行、条件分支 |
 | **记忆回溯** | 每次资源变更自动拍快照，支持回溯到任意历史版本，恢复操作本身也可撤销。快照数量可配置（3-200，默认 10），可关闭。Genesis Agent 内置回溯工具，Web 面板可视化时间线 + 设置面板 |
 | **文件快照** | MCP 文件操作（创建/覆写/移动/删除）自动备份文件内容（≤10MB），每个文件独立保留版本，支持一键恢复。操作标签清晰区分：Agent 创建/覆写/删除/移动文件、恢复前自动备份 |
