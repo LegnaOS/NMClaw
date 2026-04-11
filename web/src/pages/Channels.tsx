@@ -441,30 +441,24 @@ export default function Channels() {
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-[#94a3b8] mb-1">Corp ID</label>
-                  <input value={cfg.corpId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, corpId: e.target.value } })}
-                    placeholder="ww..."
+                  <label className="block text-xs text-[#94a3b8] mb-1">Bot ID</label>
+                  <input value={cfg.botId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botId: e.target.value } })}
+                    placeholder="aibqNwrMTV68..."
                     className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
                 </div>
                 <div>
-                  <label className="block text-xs text-[#94a3b8] mb-1">Bot ID</label>
-                  <input value={cfg.botId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botId: e.target.value } })}
-                    placeholder="Bot ID"
-                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                  <label className="block text-xs text-[#94a3b8] mb-1">Secret</label>
+                  <input value={cfg.secret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, secret: e.target.value } })}
+                    type="password" placeholder="YEWUXPwid85u..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
                 </div>
               </div>
-              <div>
-                <label className="block text-xs text-[#94a3b8] mb-1">Secret</label>
-                <input value={cfg.secret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, secret: e.target.value } })}
-                  type="password" placeholder="应用 Secret"
-                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
-              </div>
               <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
-                <p className="text-[#f1f5f9] font-medium">企业微信机器人配置步骤：</p>
-                <p>1. 访问 <a href="https://work.weixin.qq.com/wework_admin/frame#apps" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">企业微信管理后台</a> → 应用管理 → 创建应用</p>
-                <p>2. 获取 Corp ID（我的企业 → 企业信息）和应用 Secret</p>
-                <p>3. 开启机器人能力，获取 Bot ID</p>
-                <p className="text-[#22c55e] mt-1">WebSocket 长连接模式，无需公网 URL</p>
+                <p className="text-[#f1f5f9] font-medium">企业微信智能机器人配置步骤：</p>
+                <p>1. 企业微信管理后台 → 应用管理 → 智能机器人 → API 配置</p>
+                <p>2. 连接方式选择「使用长连接」</p>
+                <p>3. 复制 Bot ID 和 Secret 到上方</p>
+                <p className="text-[#22c55e] mt-1">WebSocket 长连接 wss://openws.work.weixin.qq.com，无需公网 URL，自动心跳保活 + 断线重连</p>
               </div>
             </div>
           )}

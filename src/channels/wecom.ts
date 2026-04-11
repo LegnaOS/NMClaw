@@ -1,109 +1,229 @@
 /**
- * B6: 企业微信适配器 — WebSocket 长连接模式（无需公网 URL）
+ * B6: 企业微信智能机器人适配器 — WebSocket 长连接模式
+ *
+ * 协议文档: https://developer.work.weixin.qq.com/document/path/99110
+ * WebSocket 地址: wss://openws.work.weixin.qq.com
+ * 认证: BotID + Secret → aibot_subscribe
+ * 心跳: 30 秒 ping/pong
+ * 消息: aibot_msg_callback → aibot_respond_msg (支持流式)
+ * 事件: aibot_event_callback → aibot_respond_welcome_msg
  */
+import { WebSocket } from 'ws'
+import { nanoid } from 'nanoid'
 import { registerAdapter, processIncomingMessage } from '../channel-adapter.js'
 import type { ChannelAdapter, IncomingMessage } from '../channel-adapter.js'
 import type { ChannelConfig } from '../types.js'
 
 export interface WecomChannelConfig {
-  corpId: string
   botId: string
   secret: string
 }
 
-const activeConnections = new Map<string, { ws: any; status: 'connected' | 'disconnected' | 'error' }>()
-
-async function getAccessToken(corpId: string, secret: string): Promise<string> {
-  const res = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`)
-  const data = await res.json() as any
-  if (data.errcode !== 0) throw new Error(`WeChat Work token error: ${data.errmsg}`)
-  return data.access_token
+interface WecomConnection {
+  ws: WebSocket
+  status: 'connected' | 'disconnected' | 'error'
+  heartbeatTimer?: ReturnType<typeof setInterval>
+  channelConfig: ChannelConfig
 }
 
-function splitMessage(text: string, limit: number = 2048): string[] {
-  if (text.length <= limit) return [text]
-  const parts: string[] = []
-  for (let i = 0; i < text.length; i += limit) parts.push(text.slice(i, i + limit))
-  return parts
+const activeConnections = new Map<string, WecomConnection>()
+
+// ─── 协议消息构造 ───
+
+function makeReqId(): string { return nanoid(16) }
+
+function subscribeMsg(botId: string, secret: string) {
+  return JSON.stringify({
+    cmd: 'aibot_subscribe',
+    headers: { req_id: makeReqId() },
+    body: { bot_id: botId, secret },
+  })
 }
+
+function pingMsg() {
+  return JSON.stringify({
+    cmd: 'ping',
+    headers: { req_id: makeReqId() },
+  })
+}
+
+function streamResponseMsg(reqId: string, streamId: string, content: string, finish: boolean) {
+  return JSON.stringify({
+    cmd: 'aibot_respond_msg',
+    headers: { req_id: reqId },
+    body: {
+      msgtype: 'stream',
+      stream: { id: streamId, finish, content },
+    },
+  })
+}
+
+function welcomeMsg(reqId: string, content: string) {
+  return JSON.stringify({
+    cmd: 'aibot_respond_welcome_msg',
+    headers: { req_id: reqId },
+    body: { msgtype: 'text', text: { content } },
+  })
+}
+
+function sendMsg(chatId: string, chatType: number, content: string) {
+  return JSON.stringify({
+    cmd: 'aibot_send_msg',
+    headers: { req_id: makeReqId() },
+    body: {
+      chatid: chatId,
+      chat_type: chatType,
+      msgtype: 'markdown',
+      markdown: { content },
+    },
+  })
+}
+
+// ─── 连接管理 ───
+
+function startHeartbeat(conn: WecomConnection) {
+  conn.heartbeatTimer = setInterval(() => {
+    if (conn.ws.readyState === WebSocket.OPEN) {
+      conn.ws.send(pingMsg())
+    }
+  }, 30_000)
+}
+
+function stopHeartbeat(conn: WecomConnection) {
+  if (conn.heartbeatTimer) {
+    clearInterval(conn.heartbeatTimer)
+    conn.heartbeatTimer = undefined
+  }
+}
+
+async function connectWecom(channelConfig: ChannelConfig): Promise<void> {
+  const cfg = channelConfig.config as WecomChannelConfig
+  if (!cfg.botId || !cfg.secret) throw new Error('企业微信: 需要 Bot ID 和 Secret')
+
+  // 清理旧连接
+  const old = activeConnections.get(channelConfig.id)
+  if (old) { stopHeartbeat(old); try { old.ws.close() } catch {} }
+
+  const ws = new WebSocket('wss://openws.work.weixin.qq.com')
+  const conn: WecomConnection = { ws, status: 'disconnected', channelConfig }
+  activeConnections.set(channelConfig.id, conn)
+
+  ws.on('open', () => {
+    console.log(`[wecom] WebSocket connected, subscribing...`)
+    ws.send(subscribeMsg(cfg.botId, cfg.secret))
+  })
+
+  ws.on('message', async (raw: Buffer) => {
+    try {
+      const data = JSON.parse(raw.toString())
+
+      // 订阅响应
+      if (data.errcode !== undefined && !data.cmd) {
+        if (data.errcode === 0) {
+          conn.status = 'connected'
+          startHeartbeat(conn)
+          console.log(`[wecom] subscribed: ${channelConfig.name}`)
+        } else {
+          conn.status = 'error'
+          console.error(`[wecom] subscribe failed: ${data.errmsg}`)
+        }
+        return
+      }
+
+      // 心跳响应
+      if (!data.cmd) return
+
+      // 消息回调
+      if (data.cmd === 'aibot_msg_callback') {
+        const body = data.body
+        const reqId = data.headers?.req_id
+        if (!body?.text?.content || !reqId) return
+
+        const msg: IncomingMessage = {
+          channelId: channelConfig.id,
+          channelType: 'wecom',
+          userId: body.from?.userid || '',
+          content: (body.text.content || '').replace(/@\S+\s*/g, '').trim(),
+          messageId: body.msgid || makeReqId(),
+          conversationId: body.chatid || body.from?.userid || '',
+          isGroup: body.chattype === 'group',
+          mentionedBot: true,
+          timestamp: Date.now(),
+        }
+
+        // 流式回复
+        const streamId = makeReqId()
+
+        // 先发"思考中"
+        ws.send(streamResponseMsg(reqId, streamId, '思考中...', false))
+
+        const response = await processIncomingMessage(msg, channelConfig)
+        if (response) {
+          // 发送最终内容
+          ws.send(streamResponseMsg(reqId, streamId, response, true))
+        } else {
+          ws.send(streamResponseMsg(reqId, streamId, '（无回复）', true))
+        }
+        return
+      }
+
+      // 事件回调
+      if (data.cmd === 'aibot_event_callback') {
+        const body = data.body
+        const reqId = data.headers?.req_id
+        const eventType = body?.event?.eventtype
+
+        if (eventType === 'enter_chat' && reqId) {
+          ws.send(welcomeMsg(reqId, '你好！我是 AI 助手，有什么可以帮你的吗？'))
+        }
+        if (eventType === 'disconnected_event') {
+          console.log(`[wecom] disconnected by server (new connection established elsewhere)`)
+          conn.status = 'disconnected'
+        }
+        return
+      }
+    } catch (e) {
+      console.error('[wecom] message parse error:', e)
+    }
+  })
+
+  ws.on('close', (code) => {
+    conn.status = 'disconnected'
+    stopHeartbeat(conn)
+    console.log(`[wecom] connection closed (code: ${code})`)
+
+    // 自动重连（非主动关闭）
+    if (activeConnections.has(channelConfig.id)) {
+      setTimeout(() => {
+        if (activeConnections.has(channelConfig.id)) {
+          console.log('[wecom] reconnecting...')
+          connectWecom(channelConfig).catch(e => console.error('[wecom] reconnect failed:', e))
+        }
+      }, 5000)
+    }
+  })
+
+  ws.on('error', (e) => {
+    conn.status = 'error'
+    console.error('[wecom] ws error:', e.message)
+  })
+}
+
+// ─── Adapter ───
 
 const wecomAdapter: ChannelAdapter = {
   type: 'wecom',
 
   async start(channelConfig: ChannelConfig): Promise<void> {
-    const cfg = channelConfig.config as WecomChannelConfig
-    if (!cfg.corpId || !cfg.secret) throw new Error('WeChat Work: corpId and secret required')
-
-    const token = await getAccessToken(cfg.corpId, cfg.secret)
-
-    // 获取 WebSocket 回调连接地址
-    const callbackRes = await fetch('https://qyapi.weixin.qq.com/cgi-bin/callback/get_callback_url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: token }),
-    })
-
-    // 企微 WebSocket 长连接
-    const { WebSocket } = await import('ws')
-    const wsUrl = `wss://open.work.weixin.qq.com/connect/bot/${cfg.botId}`
-    const ws = new WebSocket(wsUrl)
-
-    const state = { ws, status: 'disconnected' as 'connected' | 'disconnected' | 'error' }
-    activeConnections.set(channelConfig.id, state)
-
-    ws.on('open', () => {
-      state.status = 'connected'
-      console.log(`[wecom] connected: ${channelConfig.name}`)
-    })
-
-    ws.on('message', async (raw: Buffer) => {
-      try {
-        const data = JSON.parse(raw.toString())
-        if (data.MsgType !== 'text') return
-
-        const msg: IncomingMessage = {
-          channelId: channelConfig.id,
-          channelType: 'wecom',
-          userId: data.FromUserName || data.From || '',
-          userName: data.FromUserName,
-          content: data.Content || data.text?.content || '',
-          messageId: data.MsgId || String(Date.now()),
-          conversationId: data.FromUserName || '',
-          isGroup: !!data.GroupId,
-          timestamp: Date.now(),
-        }
-
-        const response = await processIncomingMessage(msg, channelConfig)
-        if (!response) return
-
-        // 通过 API 回复
-        const replyToken = await getAccessToken(cfg.corpId, cfg.secret)
-        for (const part of splitMessage(response)) {
-          await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${replyToken}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              touser: msg.userId,
-              msgtype: 'markdown',
-              agentid: cfg.botId,
-              markdown: { content: part },
-            }),
-          })
-        }
-      } catch (e) {
-        console.error('[wecom] message error:', e)
-      }
-    })
-
-    ws.on('close', () => { state.status = 'disconnected' })
-    ws.on('error', (e: Error) => { state.status = 'error'; console.error('[wecom] ws error:', e.message) })
+    await connectWecom(channelConfig)
   },
 
   async stop(channelId: string): Promise<void> {
     const conn = activeConnections.get(channelId)
     if (conn) {
-      try { conn.ws.close() } catch { /* */ }
-      activeConnections.delete(channelId)
+      stopHeartbeat(conn)
+      activeConnections.delete(channelId) // 先删除，防止触发自动重连
+      try { conn.ws.close() } catch {}
     }
   },
 
@@ -112,18 +232,10 @@ const wecomAdapter: ChannelAdapter = {
   },
 
   async sendMessage(channelId: string, userId: string, content: string): Promise<void> {
-    const store = (await import('../store.js')).loadStore()
-    const ch = ((store.channels || []) as ChannelConfig[]).find(c => c.id === channelId)
-    if (!ch) return
-    const cfg = ch.config as WecomChannelConfig
-    const token = await getAccessToken(cfg.corpId, cfg.secret)
-    for (const part of splitMessage(content)) {
-      await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ touser: userId, msgtype: 'markdown', agentid: cfg.botId, markdown: { content: part } }),
-      })
-    }
+    const conn = activeConnections.get(channelId)
+    if (!conn || conn.ws.readyState !== WebSocket.OPEN) return
+    // 单聊: chat_type=1, chatid=userid
+    conn.ws.send(sendMsg(userId, 1, content))
   },
 }
 
