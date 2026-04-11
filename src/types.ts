@@ -136,6 +136,19 @@ export interface EvoMapState {
   lastHeartbeatAt: number
 }
 
+// --- Feature Flags ---
+
+export interface FeatureFlags {
+  injectionScanner?: boolean
+  smartRouting?: boolean
+  skillEvolution?: boolean
+  frozenPromptCache?: boolean
+  contextCompressor?: boolean
+  crossSessionSearch?: boolean
+  programmaticToolCalling?: boolean
+  enhancedDelegation?: boolean
+}
+
 // --- Store ---
 
 export interface SnapshotConfig {
@@ -156,6 +169,7 @@ export interface StoreData {
   pairings: PairingRecord[]
   evomap?: EvoMapState
   snapshot?: SnapshotConfig
+  features?: FeatureFlags
 }
 
 // --- LLM Adapter ---

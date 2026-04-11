@@ -18,7 +18,14 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
               ├── Agent Manager         生命周期管理（TTL / 空闲超时 / 自动回收）
               ├── Model Registry        多模型（Anthropic / OpenAI / DeepSeek）
               ├── Skill Registry        技能模板 + 依赖声明
+              ├── Skill Evolution       技能自主进化（自动提取 + 版本管理）
               ├── MCP Runtime           Model Context Protocol（stdio / SSE / 内置）
+              ├── Smart Routing         智能模型路由（简单→便宜模型，复杂→强模型）
+              ├── Context Compressor    上下文自动压缩（5 阶段裁剪 + 摘要）
+              ├── Prompt Cache          冻结快照缓存（session 级 prompt 冻结）
+              ├── Injection Scanner     注入安全扫描（60+ 威胁模式 + 信任矩阵）
+              ├── PTC Runtime           编程式工具调用（JS 脚本批量调工具）
+              ├── Delegation Engine     子 Agent 委派（深度控制 + 工具隔离 + 并发）
               ├── Task Tracker          嵌套调用链 + 瀑布流时间轴
               ├── CRON Scheduler        定时任务调度
               ├── Graph Engine          DAG 工作流编排
@@ -70,6 +77,36 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 | **Web 控制台** | React 19 + Tailwind CSS 4 暗色主题 — Chat / Agents / Models / Skills / MCPs / Graphs / Cron / Channels |
 | **CLI** | `nmclaw` 命令行完整管理 |
 
+### v2.0 进化特性（融合 Hermes Agent）
+
+| 特性 | 说明 |
+|------|------|
+| **技能自主进化** | Agent 完成复杂任务（5+ 工具调用）后，自动提取方法论保存为 `SKILL.md`。下次遇到类似任务直接加载技能，发现过时自动修补。渐进式披露：索引注入 system prompt，完整内容按需加载。存储于 `~/.nmclaw/skills/` |
+| **上下文自动压缩** | token 超阈值（~20K tokens）时自动触发 5 阶段压缩：裁剪旧 tool_result → 保护头部消息 → 找尾部边界 → 确定性摘要中间轮次 → 验证 tool_call/tool_result 配对完整性。支持 Anthropic 原生格式 / XML / OpenAI 三条路径。600 秒冷却防止频繁压缩 |
+| **冻结快照缓存** | Session 级 system prompt 冻结。Memory / Skill 写入只更新磁盘，不更新当前 session 的 system prompt，保证整个会话的 Anthropic prompt cache 不失效。30 分钟 TTL，LRU 淘汰 |
+| **跨会话搜索** | FTS5 全文检索所有 Agent 的历史对话。unicode61 tokenizer 支持中英文混合搜索。通过 triggers 自动同步索引。内置 `search_memory` 工具 + `GET /api/memory/search` API |
+| **智能模型路由** | 简单消息（≤200 字符、无代码块、无 URL、无复杂关键词）自动路由到便宜模型，复杂任务保持主模型。保守策略：ALL-must-pass，任何判断失败回退主模型。支持中英文复杂关键词检测 |
+| **编程式工具调用** | LLM 写一段 JS 脚本通过 HTTP 回调批量调用工具，中间结果不进入上下文。一次推理完成原本需要 10 轮的工作。安全沙箱：过滤 API Key 环境变量、工具白名单、5 分钟超时、50 次调用上限、50KB 输出上限 |
+| **注入安全扫描** | 60+ 正则威胁模式，覆盖 prompt injection / 数据外泄 / 破坏性命令 / 持久化 / 混淆 / 凭证暴露 / 零宽 Unicode。信任矩阵：builtin 全放行 → trusted 仅阻止 critical → community 阻止 critical+high → agent-created 阻止 critical+high+medium。技能保存前自动扫描，危险内容原子回滚 |
+| **子 Agent 委派增强** | 隔离的子 Agent 实例，独立工具集和迭代预算。MAX_DEPTH=2 防止无限递归，MAX_CONCURRENT=3 并发控制。子 Agent 使用聚焦 system prompt（仅目标+上下文），自动阻止危险工具（dispatch_to_agent / destroy_agent / execute_script 等） |
+
+所有进化特性默认启用，可通过 `store.json` 的 `features` 字段独立开关：
+
+```json
+{
+  "features": {
+    "injectionScanner": true,
+    "smartRouting": true,
+    "skillEvolution": true,
+    "frozenPromptCache": true,
+    "contextCompressor": true,
+    "crossSessionSearch": true,
+    "programmaticToolCalling": true,
+    "enhancedDelegation": true
+  }
+}
+```
+
 ## 快速开始
 
 ```bash
@@ -104,7 +141,14 @@ src/
   skill-registry.ts    技能 CRUD + 模板（新增自动绑定 Genesis）
   mcp-registry.ts      MCP 服务 CRUD（新增自动绑定 Genesis）
   skill-upload.ts      技能上传 + URL 导入
-  memory.ts            Agent 长期记忆（跨会话持久化 + 自动摘要）
+  memory.ts            Agent 长期记忆（跨会话持久化 + 自动摘要 + FTS5 全文检索）
+  injection-scanner.ts 注入安全扫描（60+ 威胁模式 + 信任矩阵）
+  smart-routing.ts     智能模型路由（简单→便宜模型，复杂→强模型）
+  skill-evolution.ts   技能自主进化（自动提取 + SKILL.md + 版本管理）
+  prompt-cache.ts      冻结快照缓存（session 级 system prompt 冻结）
+  context-compressor.ts 上下文自动压缩（5 阶段裁剪 + 摘要）
+  ptc-runtime.ts       编程式工具调用（JS 脚本 + HTTP 回调 + 安全沙箱）
+  delegation.ts        子 Agent 委派增强（深度控制 + 工具隔离 + 并发管理）
   ext/
     evomap.ts          EvoMap GEP-A2A 协议（注册/心跳/积分）
     clawhub.ts         ClawHub 商店客户端

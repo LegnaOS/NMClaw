@@ -150,7 +150,7 @@ export function seedDefaults(): void {
 }
 
 // ─── Genesis 系统提示词（单一来源） ───
-const GENESIS_SYSTEM_PROMPT_VERSION = 6 // bump this to force update on existing installs
+const GENESIS_SYSTEM_PROMPT_VERSION = 7 // bump this to force update on existing installs
 const GENESIS_SYSTEM_PROMPT = [
   '你是 NMClaw 平台的内核调度器（Genesis Agent）。你不执行任务，你调度任务。',
   '',
@@ -208,6 +208,15 @@ const GENESIS_SYSTEM_PROMPT = [
   '- 必须经用户确认后才能执行 restore_snapshot',
   '- 恢复操作本身也会被记录，所以恢复后还可以再次回溯',
   '',
+  '═══ 进化能力 ═══',
+  '',
+  '你拥有技能自动进化能力：',
+  '- 使用 list_evolved_skills 查看已学习的技能',
+  '- 使用 view_evolved_skill 查看技能详情',
+  '- 使用 search_memory 搜索历史对话记录',
+  '- 使用 execute_script 编写 JS 脚本批量调用工具',
+  '- 复杂任务完成后，系统会自动提取方法论保存为可复用技能',
+  '',
   '请用中文回答。',
 ].join('\n')
 
@@ -220,6 +229,10 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'evomap_builtin', name: 'evomap', description: 'EvoMap 协作进化网络：evomap_register（注册节点并获取绑定链接）、evomap_status（查看节点状态和积分）' },
   { id: 'njggzy_builtin', name: 'njggzy', description: '南京公共资源交易信息：抓取招标/中标公告、解析详情、关键词查询、招标-中标关联匹配' },
   { id: 'snapshot_builtin', name: 'snapshot', description: '记忆回溯：列出操作快照、恢复到历史版本、对比差异。每次资源变更自动拍快照，最多保留 200 条' },
+  // F1: 技能自动进化
+  { id: 'evolution_builtin', name: 'evolution', description: '技能自动进化：列出/查看/创建/删除自动学习的技能。Agent 完成复杂任务后自动提取方法论' },
+  // F6: 编程式工具调用
+  { id: 'ptc_builtin', name: 'ptc', description: '编程式工具调用：执行 JavaScript 脚本批量调用工具，一次推理完成多步工作' },
 ]
 
 /**

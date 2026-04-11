@@ -3,8 +3,8 @@
  * Storage: ~/.nmclaw/memory/{agentId}.sqlite
  */
 import Database from 'better-sqlite3'
-import { mkdirSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, existsSync, readdirSync } from 'node:fs'
+import { join, basename } from 'node:path'
 import { getStoreDir } from './store.js'
 
 const RECENT_TURNS_LIMIT = 10
@@ -39,6 +39,8 @@ function getDb(agentId: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_turns_agent ON turns(agent_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_summaries_agent ON summaries(agent_id, created_at);
   `)
+  // F4: FTS5 全文检索
+  ensureFTS(db)
   dbCache.set(agentId, db)
   return db
 }
@@ -234,4 +236,119 @@ export function extractKnowledgeGraph(agentId: string): KnowledgeGraph {
 export function closeAllMemoryDbs(): void {
   for (const [, db] of dbCache) { try { db.close() } catch { /* */ } }
   dbCache.clear()
+}
+
+// ─── F4: Cross-Session Search (FTS5) ───
+
+export interface SearchResult {
+  agentId: string
+  turnId: number
+  userMessage: string
+  assistantResponse: string
+  createdAt: number
+  rank: number
+  snippet: string
+}
+
+/** 确保 FTS5 虚拟表存在 */
+function ensureFTS(db: Database.Database): void {
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
+        user_message, assistant_response,
+        content='turns', content_rowid='id',
+        tokenize='unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS turns_fts_ai AFTER INSERT ON turns BEGIN
+        INSERT INTO turns_fts(rowid, user_message, assistant_response)
+        VALUES (new.id, new.user_message, new.assistant_response);
+      END;
+      CREATE TRIGGER IF NOT EXISTS turns_fts_ad AFTER DELETE ON turns BEGIN
+        INSERT INTO turns_fts(turns_fts, rowid, user_message, assistant_response)
+        VALUES ('delete', old.id, old.user_message, old.assistant_response);
+      END;
+      CREATE TRIGGER IF NOT EXISTS turns_fts_au AFTER UPDATE ON turns BEGIN
+        INSERT INTO turns_fts(turns_fts, rowid, user_message, assistant_response)
+        VALUES ('delete', old.id, old.user_message, old.assistant_response);
+        INSERT INTO turns_fts(rowid, user_message, assistant_response)
+        VALUES (new.id, new.user_message, new.assistant_response);
+      END;
+    `)
+    // 首次创建时重建索引
+    const { cnt } = db.prepare("SELECT COUNT(*) as cnt FROM turns_fts").get() as { cnt: number }
+    const { total } = db.prepare("SELECT COUNT(*) as total FROM turns").get() as { total: number }
+    if (cnt === 0 && total > 0) {
+      db.exec("INSERT INTO turns_fts(turns_fts) VALUES('rebuild')")
+      console.log(`[memory-fts] rebuilt index for ${total} turns`)
+    }
+  } catch (e) {
+    // FTS5 可能不可用（某些 SQLite 编译版本），静默降级
+    console.warn('[memory-fts] FTS5 init failed, search disabled:', e)
+  }
+}
+
+/** 清洗 FTS5 查询（转义特殊字符） */
+function sanitizeFtsQuery(query: string): string {
+  // 移除 FTS5 特殊字符，保留中文和英文
+  let clean = query
+    .replace(/[+{}()^~]/g, ' ')
+    .replace(/"/g, ' ')
+    .replace(/\*/g, ' ')
+    .trim()
+  if (!clean) return ''
+  // 每个词加引号（避免 FTS5 语法错误）
+  const words = clean.split(/\s+/).filter(w => w.length >= 2)
+  if (words.length === 0) return ''
+  return words.map(w => `"${w}"`).join(' ')
+}
+
+/** 搜索单个 agent 的记忆 */
+export function searchMemory(query: string, agentId: string, limit: number = 20): SearchResult[] {
+  const ftsQuery = sanitizeFtsQuery(query)
+  if (!ftsQuery) return []
+
+  try {
+    const db = getDb(agentId)
+    const rows = db.prepare(`
+      SELECT t.id, t.user_message, t.assistant_response, t.created_at,
+             rank
+      FROM turns_fts fts
+      JOIN turns t ON t.id = fts.rowid
+      WHERE turns_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, limit) as any[]
+
+    return rows.map(r => ({
+      agentId,
+      turnId: r.id,
+      userMessage: r.user_message,
+      assistantResponse: r.assistant_response,
+      createdAt: r.created_at,
+      rank: r.rank,
+      snippet: `${r.user_message.slice(0, 200)}...`,
+    }))
+  } catch {
+    return []
+  }
+}
+
+/** 跨所有 agent 搜索记忆 */
+export function searchAllAgents(query: string, limit: number = 20): SearchResult[] {
+  const memDir = join(getStoreDir(), 'memory')
+  if (!existsSync(memDir)) return []
+
+  let files: string[]
+  try { files = readdirSync(memDir).filter(f => f.endsWith('.sqlite')) } catch { return [] }
+
+  const allResults: SearchResult[] = []
+  for (const file of files) {
+    const agentId = basename(file, '.sqlite')
+    const results = searchMemory(query, agentId, limit)
+    allResults.push(...results)
+  }
+
+  // 按 rank 排序，取 top N
+  allResults.sort((a, b) => a.rank - b.rank)
+  return allResults.slice(0, limit)
 }

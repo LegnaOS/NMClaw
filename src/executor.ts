@@ -6,6 +6,14 @@ import { getAgent, touchAgent } from './agent-manager.js'
 import { getAllTools, getToolsForAgent, callTool, findToolMcp } from './mcp-runtime.js'
 import { augmentMessageWithLinks } from './link-understanding.js'
 import { loadMemoryContext, saveTurn } from './memory.js'
+import { loadStore } from './store.js'
+import { sanitizeSkillContent } from './injection-scanner.js'
+import { routeModel } from './smart-routing.js'
+import { buildSkillIndexPrompt, shouldEvolveSkill, buildSkillExtractionPrompt, parseSkillFromResponse, saveSkill } from './skill-evolution.js'
+import { getOrBuildFrozenPrompt, deriveSessionId } from './prompt-cache.js'
+import { compressAnthropicMessages, compressChatMessages } from './context-compressor.js'
+import { canDelegate, registerChild, unregisterChild, createDelegationContext, filterToolsForChild, buildChildSystemPrompt } from './delegation.js'
+import type { DelegationContext } from './delegation.js'
 import type { ChatMessage, ChatResponse, ModelConfig } from './types.js'
 import type { ToolDef } from './mcp-runtime.js'
 
@@ -172,13 +180,23 @@ function buildSystemPrompt(agentId: string) {
   const model = getModel(agent.modelId)
   if (!model) throw new Error(`Model ${agent.modelId} not found`)
 
+  const features = loadStore().features
   const parts: string[] = []
   if (agent.systemPrompt) parts.push(agent.systemPrompt)
 
-  // Include ALL skills from the shared pool
+  // Include ALL skills from the shared pool (F7: scan for injection)
   const allSkills = listSkills()
   for (const skill of allSkills) {
-    parts.push(`[Skill: ${skill.name}]\n${skill.promptTemplate}`)
+    const safe = (features?.injectionScanner !== false)
+      ? sanitizeSkillContent(skill.name, skill.promptTemplate)
+      : skill.promptTemplate
+    parts.push(`[Skill: ${skill.name}]\n${safe}`)
+  }
+
+  // F1: Append evolved skill index (progressive disclosure — metadata only)
+  if (features?.skillEvolution !== false) {
+    const skillIndex = buildSkillIndexPrompt()
+    if (skillIndex) parts.push(skillIndex)
   }
 
   touchAgent(agentId)
@@ -734,35 +752,73 @@ export interface ChannelContext {
   channelType: string
 }
 
-export async function* streamTask(agentId: string, messages: ChatMessage[], channelCtx?: ChannelContext, signal?: AbortSignal): AsyncGenerator<string> {
-  const { agent, model, systemPrompt } = buildSystemPrompt(agentId)
-  const tools = await getToolsForAgent(agent.mcpIds)
+export async function* streamTask(agentId: string, messages: ChatMessage[], channelCtx?: ChannelContext, signal?: AbortSignal, delegationCtx?: DelegationContext): AsyncGenerator<string> {
+  const { agent, model: primaryModel, systemPrompt } = buildSystemPrompt(agentId)
+  const features = loadStore().features
 
-  // Inject channel context into system prompt so agent knows how to send files
-  let finalSystem = systemPrompt
-  if (channelCtx) {
-    finalSystem += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
-      `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
+  // F5: Smart Model Routing — 简单消息路由到便宜模型
+  let effectiveModel = primaryModel
+  if (features?.smartRouting !== false && !delegationCtx) {
+    const routing = routeModel(agentId, messages)
+    if (routing.reason === 'simple_message' && routing.modelId !== primaryModel.id) {
+      const cheap = getModel(routing.modelId)
+      if (cheap) effectiveModel = cheap
+    }
   }
 
-  // Long-term memory: load past interactions and inject into system prompt
-  try {
-    const memCtx = loadMemoryContext(agentId)
-    if (memCtx) finalSystem += memCtx
-  } catch (e) {
-    console.error(`[memory] load failed for ${agentId}:`, e)
+  // F8: Enhanced Delegation — 子 Agent 使用受限工具集
+  let tools = await getToolsForAgent(agent.mcpIds)
+  let maxRounds = MAX_TOOL_ROUNDS
+  if (delegationCtx) {
+    tools = filterToolsForChild(tools, undefined, delegationCtx.toolRestrictions.length > 0 ? delegationCtx.toolRestrictions : undefined)
+    maxRounds = Math.min(delegationCtx.maxRounds, MAX_TOOL_ROUNDS)
+  }
+
+  // F3: Frozen Prompt Cache — session 级 system prompt 冻结
+  let finalSystem: string
+  if (features?.frozenPromptCache !== false && !delegationCtx) {
+    const sessionId = deriveSessionId(agentId, messages[0]?.content || '')
+    finalSystem = getOrBuildFrozenPrompt(agentId, sessionId, () => {
+      let s = systemPrompt
+      if (channelCtx) {
+        s += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
+          `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
+      }
+      try { const mem = loadMemoryContext(agentId); if (mem) s += mem } catch {}
+      return s
+    })
+  } else {
+    // 原始路径（无缓存 / 子 Agent 委派）
+    finalSystem = delegationCtx ? buildChildSystemPrompt(messages[0]?.content || '', '') : systemPrompt
+    if (!delegationCtx) {
+      if (channelCtx) {
+        finalSystem += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
+          `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
+      }
+      try { const mem = loadMemoryContext(agentId); if (mem) finalSystem += mem } catch (e) { console.error(`[memory] load failed for ${agentId}:`, e) }
+    }
   }
 
   // Link Understanding: augment the last user message with fetched URL content
   const augmentedMessages = await augmentUserLinks(messages)
 
-  // Collect full assistant response for memory persistence
+  // Collect full assistant response for memory persistence + tool call tracking
   let fullResponse = ''
-  const innerGen = model.provider === 'anthropic'
-    ? streamAnthropicWithTools(model, finalSystem, augmentedMessages, tools, channelCtx, signal)
-    : streamOpenAIWithTools(model, finalSystem, augmentedMessages, tools, channelCtx, signal)
+  let toolCallCount = 0
+  const toolTrace: string[] = []
+  const innerGen = effectiveModel.provider === 'anthropic'
+    ? streamAnthropicWithTools(effectiveModel, finalSystem, augmentedMessages, tools, channelCtx, signal)
+    : streamOpenAIWithTools(effectiveModel, finalSystem, augmentedMessages, tools, channelCtx, signal)
 
   for await (const chunk of innerGen) {
+    // F1: Track tool calls for skill evolution
+    if (chunk.startsWith('[TOOL_CALL:')) {
+      toolCallCount++
+      toolTrace.push(chunk)
+    }
+    if (chunk.startsWith('[TOOL_RESULT:')) {
+      toolTrace.push(chunk)
+    }
     // Only collect visible text, skip meta/control tags
     if (chunk && !chunk.startsWith('[TOOL_CALL:') && !chunk.startsWith('[TOOL_RESULT:') &&
         !chunk.startsWith('[STREAM_META:') && !chunk.startsWith('[FILE_OUTPUT:') &&
@@ -781,6 +837,24 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
     } catch (e) {
       console.error(`[memory] save failed for ${agentId}:`, e)
     }
+  }
+
+  // F1: Skill Auto-Evolution — 复杂任务完成后自动提取技能
+  if (features?.skillEvolution !== false && !delegationCtx && shouldEvolveSkill(toolCallCount, 0)) {
+    // Fire-and-forget: 异步提取技能，不阻塞响应
+    setImmediate(async () => {
+      try {
+        const extractionPrompt = buildSkillExtractionPrompt(messages, toolTrace)
+        const result = await executeTask(agentId, extractionPrompt)
+        const parsed = parseSkillFromResponse(result.content)
+        if (parsed) {
+          const saveResult = saveSkill(parsed.meta, parsed.content)
+          if (saveResult.ok) console.log(`[skill-evolution] auto-evolved: ${parsed.meta.name} v${parsed.meta.version}`)
+        }
+      } catch (e) {
+        console.error('[skill-evolution] auto-evolution failed:', e)
+      }
+    })
   }
 }
 
@@ -910,6 +984,20 @@ async function* streamAnthropicWithTools(
     }
     anthropicMsgs.push({ role: 'assistant', content: assistantContent })
     anthropicMsgs.push(buildNativeToolResults(toolResults))
+
+    // F2: Context Compressor — 每轮工具循环后检查是否需要压缩
+    const features = loadStore().features
+    if (features?.contextCompressor !== false) {
+      const totalChars = system.length + JSON.stringify(anthropicMsgs).length
+      if (totalChars > 80000) {
+        const { messages: compressed, result } = compressAnthropicMessages(anthropicMsgs, system.length)
+        if (result.compressed) {
+          anthropicMsgs.length = 0
+          anthropicMsgs.push(...compressed)
+          console.log(`[context-compressor] native: saved ${result.savedChars} chars (${result.originalCount} → ${result.compressedCount} msgs)`)
+        }
+      }
+    }
   }
   if (totalTokens > 0) yield `[STREAM_META:tokens=${totalTokens}]`
 }
@@ -988,6 +1076,22 @@ async function* streamAnthropicWithToolsXml(
 
     anthropicMsgs.push({ role: 'assistant', content: result.text })
     anthropicMsgs.push({ role: 'user', content: toolResultTexts.join('\n') })
+
+    // F2: Context Compressor — XML 路径
+    const featuresXml = loadStore().features
+    if (featuresXml?.contextCompressor !== false) {
+      const totalChars = fullSystem.length + JSON.stringify(anthropicMsgs).length
+      if (totalChars > 80000) {
+        const { messages: compressed, result: compResult } = compressChatMessages(
+          anthropicMsgs.map((m: any) => ({ role: m.role, content: m.content })),
+        )
+        if (compResult.compressed) {
+          anthropicMsgs.length = 0
+          anthropicMsgs.push(...compressed.map(m => ({ role: m.role, content: m.content })))
+          console.log(`[context-compressor] xml: saved ${compResult.savedChars} chars`)
+        }
+      }
+    }
   }
   if (totalTokens > 0) yield `[STREAM_META:tokens=${totalTokens}]`
 }
@@ -1105,6 +1209,24 @@ async function* streamOpenAIWithTools(
         }
         yield `[TOOL_RESULT:${r.call.name}|${toolResultPreview(r.result.content)}]`
         openaiMsgs.push({ role: 'tool', tool_call_id: r.call.callId, content: r.result.content })
+      }
+    }
+
+    // F2: Context Compressor — OpenAI 路径
+    const featuresOai = loadStore().features
+    if (featuresOai?.contextCompressor !== false) {
+      const totalChars = system.length + JSON.stringify(openaiMsgs).length
+      if (totalChars > 80000) {
+        const chatMsgs = openaiMsgs.filter((m: any) => m.role === 'user' || m.role === 'assistant').map((m: any) => ({ role: m.role, content: m.content || '' }))
+        const { messages: compressed, result: compResult } = compressChatMessages(chatMsgs)
+        if (compResult.compressed) {
+          // 保留 system 消息和最近的 tool 消息
+          const systemMsg = openaiMsgs[0]
+          const recentToolMsgs = openaiMsgs.slice(-4).filter((m: any) => m.role === 'tool' || m.tool_calls)
+          openaiMsgs.length = 0
+          openaiMsgs.push(systemMsg, ...compressed.map(m => ({ role: m.role, content: m.content })), ...recentToolMsgs)
+          console.log(`[context-compressor] openai: saved ${compResult.savedChars} chars`)
+        }
       }
     }
   }

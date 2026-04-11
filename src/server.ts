@@ -43,7 +43,7 @@ import { warmupStdioMcps } from './mcp-runtime.js'
 import { startHeartbeatLoop } from './ext/evomap.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
 import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
-import { listTurns, listSummaries, getMemoryStats, addTurn, editTurn, deleteTurn, deleteSummary, purgeAgentMemory, extractKnowledgeGraph } from './memory.js'
+import { listTurns, listSummaries, getMemoryStats, addTurn, editTurn, deleteTurn, deleteSummary, purgeAgentMemory, extractKnowledgeGraph, searchAllAgents, searchMemory } from './memory.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
 // Seed default models & agents on first run
@@ -776,6 +776,16 @@ app.delete('/api/agents/:id/memory', (c) => {
 app.get('/api/agents/:id/memory/graph', (c) => {
   const graph = extractKnowledgeGraph(c.req.param('id'))
   return c.json(graph)
+})
+
+// F4: Cross-Session Memory Search
+app.get('/api/memory/search', (c) => {
+  const q = c.req.query('q')
+  if (!q) return c.json({ error: 'q parameter required' }, 400)
+  const agentId = c.req.query('agentId')
+  const limit = parseInt(c.req.query('limit') || '20')
+  const results = agentId ? searchMemory(q, agentId, limit) : searchAllAgents(q, limit)
+  return c.json(results)
 })
 
 // ═══════════════════════════════════

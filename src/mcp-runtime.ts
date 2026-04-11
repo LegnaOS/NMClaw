@@ -328,9 +328,100 @@ async function builtinPlatform(name: string, input: Record<string, unknown>): Pr
       const result = await sendFileToChannel(channelId, filePath)
       return { content: result }
     }
+    if (name === 'search_memory') {
+      const query = input.query as string
+      if (!query) return { content: '缺少 query 参数', isError: true }
+      const { searchAllAgents, searchMemory } = await import('./memory.js')
+      const agentId = input.agentId as string | undefined
+      const limit = (input.limit as number) || 20
+      const results = agentId ? searchMemory(query, agentId, limit) : searchAllAgents(query, limit)
+      if (results.length === 0) return { content: `未找到与 "${query}" 相关的对话记录` }
+      const lines = results.map(r => {
+        const ts = new Date(r.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+        return `[${ts}] Agent:${r.agentId}\n  用户: ${r.userMessage.slice(0, 150)}\n  助手: ${r.assistantResponse.slice(0, 150)}`
+      })
+      return { content: `找到 ${results.length} 条相关记录:\n\n${lines.join('\n\n')}` }
+    }
     return { content: `未知平台操作: ${name}`, isError: true }
   } catch (e) {
     return { content: `平台操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
+// ─── F1: Skill Evolution tools ───
+
+async function builtinEvolution(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const { loadSkillIndex, loadSkillContent, saveSkill, deleteSkill } = await import('./skill-evolution.js')
+    const { EvolvedSkillMeta } = await import('./skill-evolution.js') as any
+    if (name === 'list_evolved_skills') {
+      const skills = loadSkillIndex()
+      if (skills.length === 0) return { content: '暂无进化技能。完成复杂任务后系统会自动提取技能，也可用 evolve_skill 手动创建。' }
+      const lines = skills.map((s: any) =>
+        `- ${s.name} (v${s.version}): ${s.description}${s.prerequisites.length ? ` [需要: ${s.prerequisites.join(', ')}]` : ''}`
+      )
+      return { content: `进化技能库 (${skills.length} 个):\n\n${lines.join('\n')}` }
+    }
+    if (name === 'view_evolved_skill') {
+      const skillName = input.name as string
+      if (!skillName) return { content: '缺少 name 参数', isError: true }
+      const content = loadSkillContent(skillName)
+      if (!content) return { content: `技能 "${skillName}" 不存在`, isError: true }
+      return { content }
+    }
+    if (name === 'evolve_skill') {
+      const skillName = input.name as string
+      const content = input.content as string
+      if (!skillName || !content) return { content: '缺少 name 或 content 参数', isError: true }
+      if (!/^[a-z][a-z0-9-]{1,63}$/.test(skillName)) return { content: '名称格式错误：需要英文 kebab-case，2-64 字符', isError: true }
+      const existing = loadSkillIndex().find((s: any) => s.name === skillName)
+      const now = Date.now()
+      const meta = {
+        name: skillName,
+        description: (input.description as string) || '',
+        version: existing ? existing.version + 1 : 1,
+        platforms: [] as string[],
+        prerequisites: (input.prerequisites as string[]) || [],
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      }
+      const result = saveSkill(meta, content)
+      if (!result.ok) return { content: `保存失败: ${result.error}`, isError: true }
+      return { content: `技能 "${skillName}" v${meta.version} 已${existing ? '更新' : '创建'}` }
+    }
+    if (name === 'delete_evolved_skill') {
+      const skillName = input.name as string
+      if (!skillName) return { content: '缺少 name 参数', isError: true }
+      const ok = deleteSkill(skillName)
+      return ok ? { content: `技能 "${skillName}" 已删除` } : { content: `技能 "${skillName}" 不存在`, isError: true }
+    }
+    return { content: `未知进化操作: ${name}`, isError: true }
+  } catch (e) {
+    return { content: `进化操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
+
+// ─── F6: PTC tools ───
+
+async function builtinPTC(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  if (name !== 'execute_script') return { content: `未知 PTC 操作: ${name}`, isError: true }
+  const script = input.script as string
+  if (!script) return { content: '缺少 script 参数', isError: true }
+  try {
+    const { executeScript } = await import('./ptc-runtime.js')
+    // 收集当前可用工具
+    const allTools = await getAllTools()
+    const allowedTools = input.allowedTools as string[] | undefined
+    const config = allowedTools ? { blockedTools: [] as string[] } : undefined
+    const tools = allowedTools ? allTools.filter(t => allowedTools.includes(t.name)) : allTools
+    const result = await executeScript(script, tools, config)
+    const parts = [`退出码: ${result.exitCode}`, `工具调用: ${result.toolCallCount} 次`, `耗时: ${result.durationMs}ms`]
+    if (result.timedOut) parts.push('⚠️ 执行超时')
+    if (result.stdout) parts.push(`\n--- stdout ---\n${result.stdout}`)
+    if (result.stderr) parts.push(`\n--- stderr ---\n${result.stderr}`)
+    return { content: parts.join('\n'), isError: result.exitCode !== 0 }
+  } catch (e) {
+    return { content: `PTC 执行错误: ${e instanceof Error ? e.message : e}`, isError: true }
   }
 }
 
@@ -946,6 +1037,22 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
         concurrencySafe: false,
         readOnly: false,
       },
+      // F4: 跨会话记忆搜索
+      {
+        name: 'search_memory',
+        description: '跨会话搜索所有 Agent 的对话记录（全文检索）。可搜索历史对话中的关键词、话题、解决方案等',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '搜索关键词' },
+            agentId: { type: 'string', description: '可选，限定搜索某个 Agent' },
+            limit: { type: 'number', description: '最大返回条数（默认 20）' },
+          },
+          required: ['query'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
     ],
     call: builtinPlatform,
   },
@@ -1204,6 +1311,77 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
       },
     ],
     call: builtinSnapshot,
+  },
+
+  // ═══ F1: Skill Evolution (技能自动进化) ═══
+  evolution: {
+    tools: [
+      {
+        name: 'list_evolved_skills',
+        description: '列出所有自动进化的技能（仅元数据：名称、描述、版本、前置工具）',
+        inputSchema: { type: 'object', properties: {} },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'view_evolved_skill',
+        description: '查看进化技能的完整 SKILL.md 内容',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: '技能名称（英文 kebab-case）' } },
+          required: ['name'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'evolve_skill',
+        description: '手动创建或更新一个进化技能。content 为 Markdown 格式的技能说明',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: '技能名称（英文 kebab-case，2-64字符）' },
+            description: { type: 'string', description: '一句话描述' },
+            content: { type: 'string', description: '技能详细内容（Markdown）' },
+            prerequisites: { type: 'array', items: { type: 'string' }, description: '需要的工具名列表' },
+          },
+          required: ['name', 'content'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      {
+        name: 'delete_evolved_skill',
+        description: '删除一个进化技能',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string', description: '技能名称' } },
+          required: ['name'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+    ],
+    call: builtinEvolution,
+  },
+
+  // ═══ F6: Programmatic Tool Calling (编程式工具调用) ═══
+  ptc: {
+    tools: [{
+      name: 'execute_script',
+      description: '执行 JavaScript 脚本，可批量调用工具（编程式工具调用）。脚本中可通过 tools.工具名(参数) 调用可用工具。适合需要多步工具调用、循环、条件判断的复杂任务',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          script: { type: 'string', description: 'JavaScript 脚本内容（ES Module 格式）' },
+          allowedTools: { type: 'array', items: { type: 'string' }, description: '允许使用的工具名列表（可选，默认安全子集）' },
+        },
+        required: ['script'],
+      },
+      concurrencySafe: false,
+      readOnly: false,
+    }],
+    call: builtinPTC,
   },
 }
 
