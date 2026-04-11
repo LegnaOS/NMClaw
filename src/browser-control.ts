@@ -4,6 +4,7 @@
  * 注册为 NMClaw MCP 内置工具
  */
 import type { Browser, BrowserContext, Page } from 'playwright-core'
+import { chromium } from 'playwright-core'
 
 // ─── Session 管理 ───
 
@@ -27,8 +28,7 @@ function resetTimer(): void {
 async function ensureSession(): Promise<BrowserSession> {
   if (session) { resetTimer(); return session }
 
-  const pw = await import('playwright-core')
-  const browser = await pw.chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

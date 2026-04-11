@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "cli": "node dist/cli.js",
     "test": "vitest --run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "postinstall": "npx playwright install chromium"
   },
   "engines": {
     "node": ">=20"
