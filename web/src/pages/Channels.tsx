@@ -83,7 +83,10 @@ export default function Channels() {
   const handleStart = async (id: string) => {
     try {
       await api.startChannel(id)
+      // 立即刷新一次，再延迟刷新（等待 WebSocket 连接建立）
       load()
+      setTimeout(() => load(), 2000)
+      setTimeout(() => load(), 5000)
     } catch (err) { alert(`启动失败: ${err instanceof Error ? err.message : err}`) }
   }
 
