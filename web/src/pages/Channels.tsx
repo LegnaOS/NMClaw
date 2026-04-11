@@ -214,8 +214,12 @@ export default function Channels() {
               <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}
                 className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none">
                 <option value="feishu">飞书</option>
-                <option value="wecom" disabled>企业微信 (即将支持)</option>
-                <option value="dingtalk" disabled>钉钉 (即将支持)</option>
+                <option value="telegram">Telegram</option>
+                <option value="discord">Discord</option>
+                <option value="slack">Slack</option>
+                <option value="wecom">企业微信</option>
+                <option value="dingtalk">钉钉</option>
+                <option value="wechat">微信公众号</option>
               </select>
             </div>
             <div>
@@ -353,6 +357,189 @@ export default function Channels() {
                 </div>
               )}
             </>
+          )}
+
+          {form.type === 'telegram' && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Bot Token</label>
+                <input value={cfg.botToken || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botToken: e.target.value } })}
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">Telegram Bot 配置步骤：</p>
+                <p>1. 在 Telegram 中搜索 <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">@BotFather</code> 并发送 <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">/newbot</code></p>
+                <p>2. 按提示设置名称，获取 Bot Token</p>
+                <p>3. 粘贴到上方输入框</p>
+                <p className="text-[#22c55e] mt-1">使用 Long Polling 模式，无需公网 URL</p>
+              </div>
+            </div>
+          )}
+
+          {form.type === 'discord' && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Bot Token</label>
+                <input value={cfg.botToken || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botToken: e.target.value } })}
+                  placeholder="MTAxNTI..."
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Guild ID (可选，限定服务器)</label>
+                <input value={cfg.guildId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, guildId: e.target.value } })}
+                  placeholder="留空则响应所有服务器"
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">Discord Bot 配置步骤：</p>
+                <p>1. 访问 <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">Discord Developer Portal</a> 创建应用</p>
+                <p>2. Bot → Reset Token → 复制 Token</p>
+                <p>3. Bot → 开启 MESSAGE CONTENT INTENT</p>
+                <p>4. OAuth2 → URL Generator → 勾选 bot + Send Messages + Read Message History</p>
+                <p>5. 用生成的链接邀请 Bot 到服务器</p>
+                <p className="text-[#22c55e] mt-1">频道中需要 @Bot 才会回复，DM 直接回复</p>
+              </div>
+            </div>
+          )}
+
+          {form.type === 'slack' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">Bot Token</label>
+                  <input value={cfg.botToken || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botToken: e.target.value } })}
+                    placeholder="xoxb-..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">App Token</label>
+                  <input value={cfg.appToken || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, appToken: e.target.value } })}
+                    placeholder="xapp-..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Signing Secret</label>
+                <input value={cfg.signingSecret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, signingSecret: e.target.value } })}
+                  type="password" placeholder="Signing Secret"
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">Slack App 配置步骤：</p>
+                <p>1. 访问 <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">api.slack.com/apps</a> 创建应用</p>
+                <p>2. Basic Information → Signing Secret</p>
+                <p>3. OAuth & Permissions → Bot Token Scopes: <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">chat:write</code> <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">app_mentions:read</code> <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">im:history</code></p>
+                <p>4. Socket Mode → 开启 → 生成 App Token</p>
+                <p>5. Event Subscriptions → 订阅 <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">message.im</code> <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">app_mention</code></p>
+                <p className="text-[#22c55e] mt-1">Socket Mode 无需公网 URL</p>
+              </div>
+            </div>
+          )}
+
+          {form.type === 'wecom' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">Corp ID</label>
+                  <input value={cfg.corpId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, corpId: e.target.value } })}
+                    placeholder="ww..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">Bot ID</label>
+                  <input value={cfg.botId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, botId: e.target.value } })}
+                    placeholder="Bot ID"
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Secret</label>
+                <input value={cfg.secret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, secret: e.target.value } })}
+                  type="password" placeholder="应用 Secret"
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">企业微信机器人配置步骤：</p>
+                <p>1. 访问 <a href="https://work.weixin.qq.com/wework_admin/frame#apps" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">企业微信管理后台</a> → 应用管理 → 创建应用</p>
+                <p>2. 获取 Corp ID（我的企业 → 企业信息）和应用 Secret</p>
+                <p>3. 开启机器人能力，获取 Bot ID</p>
+                <p className="text-[#22c55e] mt-1">WebSocket 长连接模式，无需公网 URL</p>
+              </div>
+            </div>
+          )}
+
+          {form.type === 'dingtalk' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">App Key</label>
+                  <input value={cfg.appKey || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, appKey: e.target.value } })}
+                    placeholder="ding..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">App Secret</label>
+                  <input value={cfg.appSecret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, appSecret: e.target.value } })}
+                    type="password" placeholder="App Secret"
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[#94a3b8] mb-1">Robot Code</label>
+                <input value={cfg.robotCode || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, robotCode: e.target.value } })}
+                  placeholder="机器人 Code"
+                  className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">钉钉机器人配置步骤：</p>
+                <p>1. 访问 <a href="https://open-dev.dingtalk.com" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">钉钉开放平台</a> 创建应用</p>
+                <p>2. 添加「机器人」能力，获取 App Key / App Secret / Robot Code</p>
+                <p>3. 消息接收模式选择「Stream 模式」</p>
+                <p className="text-[#22c55e] mt-1">Stream 模式长连接，无需公网 URL，自动重连</p>
+              </div>
+            </div>
+          )}
+
+          {form.type === 'wechat' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">App ID</label>
+                  <input value={cfg.appId || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, appId: e.target.value } })}
+                    placeholder="wx..."
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">App Secret</label>
+                  <input value={cfg.appSecret || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, appSecret: e.target.value } })}
+                    type="password" placeholder="App Secret"
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm focus:border-[#3b82f6] outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">Token</label>
+                  <input value={cfg.token || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, token: e.target.value } })}
+                    placeholder="自定义 Token"
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs text-[#94a3b8] mb-1">EncodingAESKey</label>
+                  <input value={cfg.encodingAESKey || ''} onChange={(e) => setForm({ ...form, config: { ...cfg, encodingAESKey: e.target.value } })}
+                    placeholder="消息加解密密钥"
+                    className="w-full bg-[#0f172a] border border-[#475569] rounded px-3 py-1.5 text-sm font-mono focus:border-[#3b82f6] outline-none" />
+                </div>
+              </div>
+              <div className="bg-[#0f172a] rounded p-3 text-xs text-[#94a3b8] space-y-1">
+                <p className="text-[#f1f5f9] font-medium">微信公众号配置步骤：</p>
+                <p>1. 访问 <a href="https://mp.weixin.qq.com" target="_blank" rel="noreferrer" className="text-[#3b82f6] hover:underline">微信公众平台</a> → 开发 → 基本配置</p>
+                <p>2. 获取 AppID 和 AppSecret</p>
+                <p>3. 服务器配置 → 填写服务器 URL: <code className="text-[#f1f5f9] font-mono bg-[#334155] px-1 rounded">https://你的域名/api/channels/wechat/callback</code></p>
+                <p>4. 设置 Token 和 EncodingAESKey</p>
+                <p className="text-yellow-400 mt-1">⚠ 需要公网 URL。超过 5 秒的回复会通过客服消息接口异步发送</p>
+              </div>
+            </div>
           )}
 
           <div className="flex gap-2">
