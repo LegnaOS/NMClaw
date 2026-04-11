@@ -124,6 +124,50 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 
 Genesis 内核调度 + 多 Agent 生命周期 + Anthropic 原生 tool_use + SSE 流式 + 工具并发调度 + Agent 长期记忆 + DAG 工作流 + 记忆回溯 + 文件快照 + CRON 定时 + 飞书渠道 + EvoMap + ClawHub
 
+## NMClaw vs OpenClaw 对比
+
+NMClaw 和 [OpenClaw](https://github.com/openclaw/openclaw) 都是开源 AI 助手平台，但设计哲学完全不同：OpenClaw 是面向个人的全渠道消息助手（单 Agent + 多渠道），NMClaw 是面向团队/企业的多 Agent 编排内核（多 Agent + 智能调度）。
+
+| 维度 | NMClaw | OpenClaw |
+|------|--------|----------|
+| **定位** | 多 Agent 编排平台（内核调度器） | 个人 AI 助手（全渠道收件箱） |
+| **Agent 架构** | Genesis 内核 + 动态 Worker 池，按需创建/销毁/路由 | 单 Agent（Pi runtime），per-session 隔离 |
+| **Agent 生命周期** | TTL + 空闲超时自动回收，热创建/编辑/停用 | 固定 Agent，session 级管理 |
+| **Agent 间协作** | Genesis 自动委派 + 子 Agent 嵌套（深度控制 + 工具隔离） | sessions_send 跨 session 消息传递 |
+| **模型支持** | Anthropic + OpenAI + DeepSeek，per-Agent 独立配置 | 多供应商（OpenAI/Anthropic/Google 等），OAuth + API Key |
+| **智能模型路由** | ✅ 简单消息→便宜模型，复杂任务→强模型 | ❌ 手动选模型，failover 回退 |
+| **工具调用协议** | Anthropic 原生 tool_use + XML 回退双路径 | Pi agent RPC + tool streaming |
+| **工具并发** | ✅ 只读工具 Promise.allSettled 并行，写操作串行 | ❌ 顺序执行 |
+| **编程式工具调用** | ✅ JS 脚本 HTTP 回调批量调工具（一次推理 = 10 轮工具） | ❌ |
+| **DAG 工作流** | ✅ 多源聚合 + 同层并行 + 条件分支 | ❌ |
+| **技能系统** | 技能注册 + 模板 + 自动绑定 Genesis + ClawHub 商店 | Skills 平台（bundled/managed/workspace） |
+| **技能自主进化** | ✅ 5+ 工具调用后自动提取 SKILL.md，版本管理 | ❌ |
+| **MCP 工具** | stdio / SSE + 内置 20+ 工具 + Agent 级隔离 | 内置工具（browser/canvas/nodes/cron/sessions） |
+| **记忆系统** | 4 层记忆栈 + 5 类自动提取 + 宫殿结构 + 语义搜索 | Session pruning（上下文裁剪） |
+| **知识图谱** | ✅ 时序实体-关系三元组，valid_from/valid_to 时间窗口 | ❌ |
+| **跨会话搜索** | ✅ FTS5 全文 + TF-IDF 语义搜索 | ❌ |
+| **上下文压缩** | ✅ 5 阶段自动压缩（裁剪→保护→摘要→验证） | Session compact（手动 /compact） |
+| **Prompt Cache** | ✅ 冻结快照缓存 + Anthropic 自动 cache | ❌ |
+| **注入安全** | ✅ 60+ 威胁模式 + 4 级信任矩阵 | DM pairing + allowlist |
+| **记忆回溯** | ✅ 操作快照 + 任意版本恢复 + 文件快照 | ❌ |
+| **IM 渠道** | 飞书（WebSocket + 流式卡片 + 大文件分片） | 24 个渠道（WhatsApp/Telegram/Slack/Discord/Signal/iMessage/Teams/Matrix/微信 等） |
+| **语音** | ❌ | ✅ Voice Wake + Talk Mode（macOS/iOS/Android） |
+| **Canvas** | ❌ | ✅ A2UI agent 驱动的可视化工作区 |
+| **浏览器控制** | 无浏览器网页抓取（纯 HTTP + HTML 解析） | ✅ 专用 Chrome/Chromium CDP 控制 |
+| **移动端** | ❌ | ✅ iOS + Android 原生 App |
+| **桌面端** | ❌ | ✅ macOS 菜单栏 App |
+| **Web 控制台** | ✅ React 19 + Tailwind 暗色主题（12 个页面） | ✅ Control UI + WebChat + Dashboard |
+| **CLI** | ✅ commander + inquirer 完整管理 | ✅ openclaw CLI（gateway/agent/send/onboard/doctor） |
+| **定时任务** | ✅ CRON 表达式绑定 Agent | ✅ Cron + wakeups + webhooks + Gmail Pub/Sub |
+| **协作网络** | ✅ EvoMap GEP-A2A 协议（节点注册/心跳/积分） | ❌ |
+| **部署** | Node.js 单进程，pnpm workspace | Node.js + launchd/systemd daemon，Docker/Nix/Tailscale |
+| **沙箱** | PTC 安全沙箱（环境变量过滤 + 工具白名单） | Docker per-session 沙箱（非 main session） |
+| **技术栈** | TypeScript + Hono + React 19 + better-sqlite3 | TypeScript + Gateway WS + Pi agent RPC |
+| **存储** | SQLite（本地，零依赖） | 文件系统 + SQLite |
+| **开源协议** | MIT | MIT |
+
+**总结：** OpenClaw 的优势在渠道覆盖（24 个 IM）、语音交互、移动端 App、浏览器控制；NMClaw 的优势在多 Agent 编排、智能记忆系统、工具并发、技能进化、知识图谱、安全扫描。选 OpenClaw 做个人全渠道助手，选 NMClaw 做多 Agent 协作平台。
+
 ## 快速开始
 
 ```bash
