@@ -107,6 +107,21 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 }
 ```
 
+### v2.1 记忆宫殿（融合 MemPalace）
+
+| 特性 | 说明 |
+|------|------|
+| **4 层记忆栈** | L0 身份（~100 tokens）→ L1 核心故事（~800）→ L2 按需加载（工具触发）→ L3 深度语义搜索。唤醒成本 ~600-900 tokens，95%+ 上下文留给任务。自动替代原始 loadMemoryContext()，drawers 为空时无缝回退 |
+| **时序知识图谱** | SQLite 实体-关系三元组，带 valid_from/valid_to 时间窗口。支持实体添加、关系建立、事实过期（不删除保留历史）、时间线查询。与 Zep 的 Neo4j 方案等价，但完全本地免费 |
+| **5 类记忆提取** | 每轮对话自动提取 DECISIONS / PREFERENCES / MILESTONES / PROBLEMS / EMOTIONAL 五类记忆。纯正则分类器（60+ 中英文标记），情感消歧（已解决的问题 → 里程碑），代码行自动过滤 |
+| **AAAK 结构化摘要** | 从文本提取实体（人/项目/工具/概念/地点）、话题（TF 频率 top-5）、关键句、情感标签（30+ 情感 + 中英文信号词）。压缩为符号格式：`E:Riley/person T:memory,search EM:excite/3` |
+| **宫殿结构** | Wing（领域）→ Room（话题）→ Drawer（记忆条目）。自动分类：技术内容 → technical，个人情感 → personal，其他 → wing_{agentName}。按 importance 排序，访问计数衰减 |
+| **TF-IDF 语义搜索** | 零外部依赖的语义搜索。中文 bigram + 英文空格分词 → TF-IDF 向量化 → 余弦相似度。IDF 缓存 120 秒，>1000 条时先 FTS5 粗筛再精排 |
+| **近似去重** | 保存记忆前 Jaccard 相似度检查（阈值 0.85），防止重复挖掘。同 wing 内去重，保留更长/更丰富版本 |
+| **Agent 日记** | Agent 可写个人日记（diary_write 工具），自动存入 wing_{agentName}/diary。观察、想法、工作记录，跨会话持久化 |
+| **知识图谱工具** | 6 个内置工具：kg_add_entity / kg_add_fact / kg_expire_fact / kg_query / kg_timeline / kg_stats。Agent 可主动构建和查询知识图谱 |
+| **记忆宫殿工具** | 6 个内置工具：palace_status / palace_list_wings / palace_list_rooms / recall_memory / palace_add_drawer / palace_semantic_search |
+
 ## 快速开始
 
 ```bash
@@ -141,7 +156,12 @@ src/
   skill-registry.ts    技能 CRUD + 模板（新增自动绑定 Genesis）
   mcp-registry.ts      MCP 服务 CRUD（新增自动绑定 Genesis）
   skill-upload.ts      技能上传 + URL 导入
-  memory.ts            Agent 长期记忆（跨会话持久化 + 自动摘要 + FTS5 全文检索）
+  memory.ts            Agent 长期记忆（跨会话持久化 + 自动摘要 + FTS5 全文检索 + Palace drawers）
+  memory-layers.ts     4 层记忆栈（L0 身份 → L1 核心 → L2 按需 → L3 搜索）
+  memory-extractor.ts  5 类记忆提取（decision/preference/milestone/problem/emotional）+ 去重
+  aaak-dialect.ts      AAAK 结构化摘要方言（实体/话题/情感提取）
+  knowledge-graph.ts   时序知识图谱（entities/triples/attributes + 时间窗口）
+  semantic-search.ts   TF-IDF 语义搜索（中文 bigram + 余弦相似度）
   injection-scanner.ts 注入安全扫描（60+ 威胁模式 + 信任矩阵）
   smart-routing.ts     智能模型路由（简单→便宜模型，复杂→强模型）
   skill-evolution.ts   技能自主进化（自动提取 + SKILL.md + 版本管理）

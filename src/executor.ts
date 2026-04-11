@@ -13,6 +13,8 @@ import { buildSkillIndexPrompt, shouldEvolveSkill, buildSkillExtractionPrompt, p
 import { getOrBuildFrozenPrompt, deriveSessionId } from './prompt-cache.js'
 import { compressAnthropicMessages, compressChatMessages } from './context-compressor.js'
 import { canDelegate, registerChild, unregisterChild, createDelegationContext, filterToolsForChild, buildChildSystemPrompt } from './delegation.js'
+import { buildMemoryPrompt } from './memory-layers.js'
+import { extractAndStore } from './memory-extractor.js'
 import type { DelegationContext } from './delegation.js'
 import type { ChatMessage, ChatResponse, ModelConfig } from './types.js'
 import type { ToolDef } from './mcp-runtime.js'
@@ -784,7 +786,13 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
         s += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
           `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
       }
-      try { const mem = loadMemoryContext(agentId); if (mem) s += mem } catch {}
+      try {
+        // M1: 4层记忆栈优先，回退到原始 loadMemoryContext
+        const palaceMem = buildMemoryPrompt(agentId)
+        if (palaceMem) { s += palaceMem } else {
+          const mem = loadMemoryContext(agentId); if (mem) s += mem
+        }
+      } catch {}
       return s
     })
   } else {
@@ -795,7 +803,13 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
         finalSystem += `\n\n---\n\n[渠道上下文] 当前用户通过「${channelCtx.channelName}」渠道（channelId: ${channelCtx.channelId}, 类型: ${channelCtx.channelType}）与你通信。` +
           `\n发送文件给用户时，必须使用 send_file_to_channel 工具，参数 channelId="${channelCtx.channelId}"。不要使用 send_file（那是 Web 专用工具）。`
       }
-      try { const mem = loadMemoryContext(agentId); if (mem) finalSystem += mem } catch (e) { console.error(`[memory] load failed for ${agentId}:`, e) }
+      try {
+        // M1: 4层记忆栈优先，回退到原始 loadMemoryContext
+        const palaceMem = buildMemoryPrompt(agentId)
+        if (palaceMem) { finalSystem += palaceMem } else {
+          const mem = loadMemoryContext(agentId); if (mem) finalSystem += mem
+        }
+      } catch (e) { console.error(`[memory] load failed for ${agentId}:`, e) }
     }
   }
 
@@ -836,6 +850,13 @@ export async function* streamTask(agentId: string, messages: ChatMessage[], chan
       saveTurn(agentId, lastUserMsg, fullResponse.trim())
     } catch (e) {
       console.error(`[memory] save failed for ${agentId}:`, e)
+    }
+    // M3: 自动提取记忆到 Palace drawers
+    try {
+      const stored = extractAndStore(agentId, lastUserMsg, fullResponse.trim())
+      if (stored > 0) console.log(`[memory-extractor] stored ${stored} memories for ${agentId}`)
+    } catch (e) {
+      console.error(`[memory-extractor] failed for ${agentId}:`, e)
     }
   }
 

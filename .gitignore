@@ -17,3 +17,5 @@ data/*.db-shm
 data/*.db-wal
 requirements/
 doc/*
+.legna/
+vendor/

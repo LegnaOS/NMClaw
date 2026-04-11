@@ -41,6 +41,8 @@ function getDb(agentId: string): Database.Database {
   `)
   // F4: FTS5 全文检索
   ensureFTS(db)
+  // M5: Palace drawers 表
+  ensureDrawers(db)
   dbCache.set(agentId, db)
   return db
 }
@@ -231,6 +233,107 @@ export function extractKnowledgeGraph(agentId: string): KnowledgeGraph {
   }
 
   return { nodes, edges }
+}
+
+// ─── M5: Palace Structure (Wing/Room/Drawer) ───
+
+export interface DrawerInput {
+  wing: string; room: string; content: string
+  memoryType?: string; aaak?: string; sourceTurnId?: number; importance?: number
+}
+export interface Drawer {
+  id: string; agentId: string; wing: string; room: string; content: string
+  memoryType?: string; aaak?: string; sourceTurnId?: number; importance: number
+  createdAt: number; accessedAt: number; accessCount: number
+}
+
+function ensureDrawers(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drawers (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      wing TEXT NOT NULL,
+      room TEXT NOT NULL,
+      content TEXT NOT NULL,
+      memory_type TEXT,
+      aaak TEXT,
+      source_turn_id INTEGER,
+      importance REAL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      accessed_at INTEGER NOT NULL,
+      access_count INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_drawers_wing ON drawers(agent_id, wing);
+    CREATE INDEX IF NOT EXISTS idx_drawers_room ON drawers(agent_id, wing, room);
+    CREATE INDEX IF NOT EXISTS idx_drawers_type ON drawers(agent_id, memory_type);
+    CREATE INDEX IF NOT EXISTS idx_drawers_importance ON drawers(agent_id, importance DESC);
+  `)
+}
+
+export function addDrawer(agentId: string, input: DrawerInput): string {
+  const { nanoid } = require('nanoid') as { nanoid: (size?: number) => string }
+  const db = getDb(agentId)
+  const id = nanoid(12)
+  const now = Date.now()
+  db.prepare(`INSERT INTO drawers (id, agent_id, wing, room, content, memory_type, aaak, source_turn_id, importance, created_at, accessed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    id, agentId, input.wing, input.room, input.content,
+    input.memoryType ?? null, input.aaak ?? null, input.sourceTurnId ?? null,
+    input.importance ?? 0.5, now, now,
+  )
+  return id
+}
+
+export function getDrawers(agentId: string, wing?: string, room?: string, limit: number = 20): Drawer[] {
+  const db = getDb(agentId)
+  let sql = 'SELECT * FROM drawers WHERE agent_id = ?'
+  const params: any[] = [agentId]
+  if (wing) { sql += ' AND wing = ?'; params.push(wing) }
+  if (room) { sql += ' AND room = ?'; params.push(room) }
+  sql += ' ORDER BY importance DESC, accessed_at DESC LIMIT ?'
+  params.push(limit)
+  return (db.prepare(sql).all(...params) as any[]).map(r => ({
+    id: r.id, agentId: r.agent_id, wing: r.wing, room: r.room, content: r.content,
+    memoryType: r.memory_type, aaak: r.aaak, sourceTurnId: r.source_turn_id,
+    importance: r.importance, createdAt: r.created_at, accessedAt: r.accessed_at, accessCount: r.access_count,
+  }))
+}
+
+export function getWings(agentId: string): { wing: string; count: number }[] {
+  const db = getDb(agentId)
+  return db.prepare('SELECT wing, COUNT(*) as count FROM drawers WHERE agent_id = ? GROUP BY wing ORDER BY count DESC')
+    .all(agentId) as { wing: string; count: number }[]
+}
+
+export function getRooms(agentId: string, wing: string): { room: string; count: number }[] {
+  const db = getDb(agentId)
+  return db.prepare('SELECT room, COUNT(*) as count FROM drawers WHERE agent_id = ? AND wing = ? GROUP BY room ORDER BY count DESC')
+    .all(agentId, wing) as { room: string; count: number }[]
+}
+
+export function touchDrawer(agentId: string, drawerId: string): void {
+  const db = getDb(agentId)
+  db.prepare('UPDATE drawers SET accessed_at = ?, access_count = access_count + 1 WHERE id = ? AND agent_id = ?')
+    .run(Date.now(), drawerId, agentId)
+}
+
+export function deleteDrawer(agentId: string, drawerId: string): boolean {
+  const db = getDb(agentId)
+  const r = db.prepare('DELETE FROM drawers WHERE id = ? AND agent_id = ?').run(drawerId, agentId)
+  return r.changes > 0
+}
+
+export function getDrawerCount(agentId: string): number {
+  const db = getDb(agentId)
+  const { cnt } = db.prepare('SELECT COUNT(*) as cnt FROM drawers WHERE agent_id = ?').get(agentId) as { cnt: number }
+  return cnt
+}
+
+export function getAllDrawerContents(agentId: string): { id: string; content: string; wing: string; room: string; memoryType?: string }[] {
+  const db = getDb(agentId)
+  return (db.prepare('SELECT id, content, wing, room, memory_type FROM drawers WHERE agent_id = ?').all(agentId) as any[]).map(r => ({
+    id: r.id, content: r.content, wing: r.wing, room: r.room, memoryType: r.memory_type,
+  }))
 }
 
 export function closeAllMemoryDbs(): void {

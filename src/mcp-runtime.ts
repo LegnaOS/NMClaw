@@ -1383,9 +1383,317 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
     }],
     call: builtinPTC,
   },
+
+  // ═══ MemPalace: 记忆宫殿 + 日记 + 知识图谱 ═══
+  palace: {
+    tools: [
+      {
+        name: 'palace_status',
+        description: '记忆宫殿状态：总记忆数、领域(wing)/话题(room)分布',
+        inputSchema: {
+          type: 'object',
+          properties: { agentId: { type: 'string', description: 'Agent ID（可选，默认当前）' } },
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'palace_list_wings',
+        description: '列出记忆宫殿的所有领域(wing)及记忆数量',
+        inputSchema: {
+          type: 'object',
+          properties: { agentId: { type: 'string', description: 'Agent ID（可选）' } },
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'palace_list_rooms',
+        description: '列出指定领域(wing)下的所有话题(room)',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            wing: { type: 'string', description: '领域名称' },
+          },
+          required: ['wing'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'recall_memory',
+        description: '按需加载记忆：指定领域(wing)或话题(room)的记忆内容。用于深入了解某个话题',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            topic: { type: 'string', description: '领域或话题名称' },
+          },
+          required: ['topic'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'palace_add_drawer',
+        description: '手动添加一条记忆到宫殿',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            wing: { type: 'string', description: '领域' },
+            room: { type: 'string', description: '话题' },
+            content: { type: 'string', description: '记忆内容' },
+            memoryType: { type: 'string', enum: ['decision', 'preference', 'milestone', 'problem', 'emotional'], description: '记忆类型' },
+          },
+          required: ['wing', 'room', 'content'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      {
+        name: 'palace_semantic_search',
+        description: '语义搜索记忆宫殿（TF-IDF 相似度），比关键词搜索更智能',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            query: { type: 'string', description: '搜索内容' },
+            wing: { type: 'string', description: '限定领域（可选）' },
+            limit: { type: 'number', description: '最大返回数（默认 5）' },
+          },
+          required: ['query'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      // M9: Agent 日记
+      {
+        name: 'diary_write',
+        description: 'Agent 写日记：记录观察、想法、工作内容。日记自动存入 wing_{agentName}/diary',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            entry: { type: 'string', description: '日记内容' },
+            topic: { type: 'string', description: '话题标签（可选）' },
+          },
+          required: ['entry'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      // M10: 知识图谱工具
+      {
+        name: 'kg_add_entity',
+        description: '添加实体到知识图谱（人/项目/工具/概念）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            name: { type: 'string', description: '实体名称' },
+            type: { type: 'string', description: '类型（person/project/tool/concept）' },
+          },
+          required: ['name'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      {
+        name: 'kg_add_fact',
+        description: '添加关系事实到知识图谱（主语-谓语-宾语 + 时间窗口）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            subject: { type: 'string', description: '主语实体' },
+            predicate: { type: 'string', description: '关系（如 works_on, loves, is_partner_of）' },
+            object: { type: 'string', description: '宾语实体' },
+            validFrom: { type: 'string', description: '生效日期（ISO 格式，可选）' },
+          },
+          required: ['subject', 'predicate', 'object'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      {
+        name: 'kg_expire_fact',
+        description: '标记知识图谱中的事实过期（不删除，保留历史）',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            tripleId: { type: 'string', description: '三元组 ID' },
+          },
+          required: ['tripleId'],
+        },
+        concurrencySafe: false,
+        readOnly: false,
+      },
+      {
+        name: 'kg_query',
+        description: '查询知识图谱中实体的所有关系',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            entity: { type: 'string', description: '实体名称' },
+          },
+          required: ['entity'],
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'kg_timeline',
+        description: '知识图谱时间线：按时间顺序展示实体的事实变化',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agentId: { type: 'string', description: 'Agent ID（可选）' },
+            entity: { type: 'string', description: '实体名称（可选，不填则全部）' },
+          },
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+      {
+        name: 'kg_stats',
+        description: '知识图谱统计：实体数、关系数、当前/过期事实数',
+        inputSchema: {
+          type: 'object',
+          properties: { agentId: { type: 'string', description: 'Agent ID（可选）' } },
+        },
+        concurrencySafe: true,
+        readOnly: true,
+      },
+    ],
+    call: builtinPalace,
+  },
 }
 
-// ─── Stdio MCP Client ───
+// ─── MemPalace handler ───
+
+async function builtinPalace(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const aid = (input.agentId as string) || 'genesis'
+
+    // Palace tools
+    if (name === 'palace_status') {
+      const { getDrawerCount, getWings } = await import('./memory.js')
+      const count = getDrawerCount(aid)
+      const wings = getWings(aid)
+      if (count === 0) return { content: '记忆宫殿为空。对话过程中系统会自动提取记忆。' }
+      const wingList = wings.map(w => `${w.wing}: ${w.count} 条`).join('\n')
+      return { content: `记忆宫殿 (${count} 条记忆, ${wings.length} 个领域):\n${wingList}` }
+    }
+    if (name === 'palace_list_wings') {
+      const { getWings } = await import('./memory.js')
+      const wings = getWings(aid)
+      if (wings.length === 0) return { content: '暂无记忆领域' }
+      return { content: wings.map(w => `- ${w.wing} (${w.count} 条)`).join('\n') }
+    }
+    if (name === 'palace_list_rooms') {
+      const { getRooms } = await import('./memory.js')
+      const rooms = getRooms(aid, input.wing as string)
+      if (rooms.length === 0) return { content: `领域 "${input.wing}" 下暂无话题` }
+      return { content: rooms.map(r => `- ${r.room} (${r.count} 条)`).join('\n') }
+    }
+    if (name === 'recall_memory') {
+      const { loadL2 } = await import('./memory-layers.js')
+      return { content: loadL2(aid, input.topic as string) }
+    }
+    if (name === 'palace_add_drawer') {
+      const { addDrawer } = await import('./memory.js')
+      const id = addDrawer(aid, {
+        wing: input.wing as string, room: input.room as string,
+        content: input.content as string, memoryType: input.memoryType as string,
+      })
+      return { content: `记忆已添加 (id: ${id})` }
+    }
+    if (name === 'palace_semantic_search') {
+      const { semanticSearch } = await import('./semantic-search.js')
+      const hits = semanticSearch(aid, input.query as string, {
+        wing: input.wing as string, limit: (input.limit as number) || 5,
+      })
+      if (hits.length === 0) return { content: `未找到与 "${input.query}" 相关的记忆` }
+      const lines = hits.map(h => `[${h.wing}/${h.room}] (${(h.similarity * 100).toFixed(0)}%) ${h.content.slice(0, 200)}`)
+      return { content: `找到 ${hits.length} 条相关记忆:\n\n${lines.join('\n\n')}` }
+    }
+
+    // Diary
+    if (name === 'diary_write') {
+      const { addDrawer } = await import('./memory.js')
+      const agentName = listAgents().find(a => a.id === aid)?.name || aid
+      const wing = `wing_${agentName.toLowerCase().replace(/\s+/g, '_')}`
+      const id = addDrawer(aid, {
+        wing, room: 'diary',
+        content: input.entry as string,
+        memoryType: 'emotional',
+        importance: 0.6,
+      })
+      return { content: `日记已记录 (${wing}/diary, id: ${id})` }
+    }
+
+    // Knowledge Graph
+    if (name === 'kg_add_entity') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      kg.addEntity(input.name as string, (input.type as string) || 'unknown')
+      return { content: `实体 "${input.name}" 已添加` }
+    }
+    if (name === 'kg_add_fact') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      kg.addTriple(
+        input.subject as string, input.predicate as string, input.object as string,
+        input.validFrom as string,
+      )
+      return { content: `事实已添加: ${input.subject} → ${input.predicate} → ${input.object}` }
+    }
+    if (name === 'kg_expire_fact') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      kg.expireTriple(input.tripleId as string)
+      return { content: `事实 ${input.tripleId} 已标记过期` }
+    }
+    if (name === 'kg_query') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      const result = kg.queryEntity(input.entity as string)
+      if (!result.entity) return { content: `实体 "${input.entity}" 不存在` }
+      const lines = [`实体: ${result.entity.name} (${result.entity.type})`]
+      for (const t of result.triples) {
+        const status = t.validTo ? '(已过期)' : '(当前)'
+        lines.push(`  ${t.subject} → ${t.predicate} → ${t.object} ${status}`)
+      }
+      return { content: lines.join('\n') }
+    }
+    if (name === 'kg_timeline') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      const timeline = kg.getTimeline(input.entity as string)
+      if (timeline.length === 0) return { content: '知识图谱中暂无时间线数据' }
+      const lines = timeline.map(t => {
+        const from = t.validFrom || '?'
+        const to = t.validTo || '至今'
+        return `[${from} → ${to}] ${t.subject} → ${t.predicate} → ${t.object}`
+      })
+      return { content: `时间线 (${timeline.length} 条):\n${lines.join('\n')}` }
+    }
+    if (name === 'kg_stats') {
+      const { KnowledgeGraph } = await import('./knowledge-graph.js')
+      const kg = new KnowledgeGraph(aid)
+      const stats = kg.getStats()
+      return { content: `知识图谱: ${stats.entities} 实体, ${stats.triples} 关系 (当前 ${stats.current}, 过期 ${stats.expired})` }
+    }
+
+    return { content: `未知宫殿操作: ${name}`, isError: true }
+  } catch (e) {
+    return { content: `宫殿操作错误: ${e instanceof Error ? e.message : e}`, isError: true }
+  }
+}
 
 class StdioMcpClient {
   private proc: ChildProcess | null = null

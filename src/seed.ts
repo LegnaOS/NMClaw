@@ -233,6 +233,8 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'evolution_builtin', name: 'evolution', description: '技能自动进化：列出/查看/创建/删除自动学习的技能。Agent 完成复杂任务后自动提取方法论' },
   // F6: 编程式工具调用
   { id: 'ptc_builtin', name: 'ptc', description: '编程式工具调用：执行 JavaScript 脚本批量调用工具，一次推理完成多步工作' },
+  // MemPalace: 记忆宫殿 + 日记 + 知识图谱
+  { id: 'palace_builtin', name: 'palace', description: '记忆宫殿：分层记忆管理、语义搜索、Agent 日记、时序知识图谱' },
 ]
 
 /**
