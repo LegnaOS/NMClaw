@@ -30,7 +30,8 @@ export default function Channels() {
     setAgents(ags)
     const sts: Record<string, string> = {}
     for (const ch of chs) {
-      if (ch.config?.mode === 'websocket') {
+      const isLongConn = ch.config?.mode === 'websocket' || ['wecom', 'telegram', 'discord', 'slack', 'dingtalk'].includes(ch.type)
+      if (isLongConn) {
         try {
           const s = await api.getChannelStatus(ch.id)
           sts[ch.id] = s.status
