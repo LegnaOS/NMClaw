@@ -43,6 +43,7 @@ import { warmupStdioMcps } from './mcp-runtime.js'
 import { startHeartbeatLoop } from './ext/evomap.js'
 import { startCron, listCronJobs, addCronJob, removeCronJob, toggleCronJob, updateCronJob } from './cron.js'
 import { listChannels, addChannel, modifyChannel, removeChannel, handleFeishuEvent, sendToChannel, startAllFeishuMonitors, startFeishuMonitor, stopFeishuMonitor, getFeishuMonitorStatus, listPairings, approvePairing, rejectPairing, getChannelMessages, getChannelConversations, subscribeChannelMessages } from './channels/feishu.js'
+import { getAdapter, startAllChannels } from './channel-adapter.js'
 import { listTurns, listSummaries, getMemoryStats, addTurn, editTurn, deleteTurn, deleteSummary, purgeAgentMemory, extractKnowledgeGraph, searchAllAgents, searchMemory } from './memory.js'
 import type { CostTier, McpTransport, ChatMessage } from './types.js'
 
@@ -61,8 +62,17 @@ startCron()
 // Resume EvoMap heartbeat if already registered
 startHeartbeatLoop()
 
-// Start Feishu WebSocket monitors for enabled channels
+// Start all channel monitors (feishu + telegram + discord + slack + wecom + dingtalk + wechat)
 startAllFeishuMonitors()
+// 动态加载非飞书渠道适配器
+import('./channels/telegram.js').catch(() => {})
+import('./channels/discord.js').catch(() => {})
+import('./channels/slack.js').catch(() => {})
+import('./channels/wecom.js').catch(() => {})
+import('./channels/dingtalk.js').catch(() => {})
+import('./channels/wechat.js').catch(() => {})
+// 启动所有非飞书渠道
+startAllChannels()
 
 const app = new Hono()
 
@@ -588,18 +598,47 @@ app.post('/api/channels/:id/feishu/callback', async (c) => {
 app.post('/api/channels/:id/start', async (c) => {
   const ch = listChannels().find((x) => x.id === c.req.param('id'))
   if (!ch) return c.json({ error: 'not found' }, 404)
-  const result = await startFeishuMonitor(ch)
-  if (!result.ok) return c.json({ error: result.error, status: 'stopped' }, 500)
-  return c.json({ ok: true, status: 'running' })
+
+  // 飞书走原有逻辑
+  if (ch.type === 'feishu') {
+    const result = await startFeishuMonitor(ch)
+    if (!result.ok) return c.json({ error: result.error, status: 'stopped' }, 500)
+    return c.json({ ok: true, status: 'running' })
+  }
+
+  // 其他渠道走 channel-adapter
+  const adapter = getAdapter(ch.type)
+  if (!adapter) return c.json({ error: `No adapter for ${ch.type}` }, 500)
+  try {
+    await adapter.start(ch)
+    return c.json({ ok: true, status: 'running' })
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e), status: 'stopped' }, 500)
+  }
 })
 
 app.post('/api/channels/:id/stop', (c) => {
-  stopFeishuMonitor(c.req.param('id'))
+  const ch = listChannels().find((x) => x.id === c.req.param('id'))
+  if (!ch) return c.json({ error: 'not found' }, 404)
+
+  if (ch.type === 'feishu') {
+    stopFeishuMonitor(c.req.param('id'))
+  } else {
+    const adapter = getAdapter(ch.type)
+    if (adapter) adapter.stop(ch.id).catch(() => {})
+  }
   return c.json({ ok: true, status: 'stopped' })
 })
 
 app.get('/api/channels/:id/status', (c) => {
-  return c.json({ status: getFeishuMonitorStatus(c.req.param('id')) })
+  const ch = listChannels().find((x) => x.id === c.req.param('id'))
+  if (!ch) return c.json({ status: 'unknown' })
+
+  if (ch.type === 'feishu') {
+    return c.json({ status: getFeishuMonitorStatus(c.req.param('id')) })
+  }
+  const adapter = getAdapter(ch.type)
+  return c.json({ status: adapter ? adapter.getStatus(ch.id) : 'disconnected' })
 })
 
 // Pairing management
