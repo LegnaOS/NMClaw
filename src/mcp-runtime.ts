@@ -1571,6 +1571,41 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
     ],
     call: builtinPalace,
   },
+
+  // ═══ Browser Control (Playwright) ═══
+  browser: {
+    tools: [], // 动态加载
+    call: builtinBrowser,
+  },
+}
+
+// 动态加载浏览器工具定义（避免启动时 import playwright-core）
+let browserToolsLoaded = false
+async function ensureBrowserTools() {
+  if (browserToolsLoaded) return
+  try {
+    const { getBrowserToolDefs } = await import('./browser-control.js')
+    const defs = getBrowserToolDefs()
+    BUILTIN_REGISTRY.browser.tools = defs
+    browserToolsLoaded = true
+  } catch { /* playwright-core not installed, skip */ }
+}
+// 启动时尝试加载
+ensureBrowserTools()
+
+// ─── Browser handler ───
+
+async function builtinBrowser(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const { handleBrowserTool } = await import('./browser-control.js')
+    return await handleBrowserTool(name, input)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('Cannot find module') || msg.includes('playwright-core')) {
+      return { content: '浏览器控制需要 playwright-core。请运行: pnpm add playwright-core && npx playwright install chromium', isError: true }
+    }
+    return { content: `浏览器错误: ${msg}`, isError: true }
+  }
 }
 
 // ─── MemPalace handler ───

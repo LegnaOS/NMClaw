@@ -235,6 +235,8 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'ptc_builtin', name: 'ptc', description: '编程式工具调用：执行 JavaScript 脚本批量调用工具，一次推理完成多步工作' },
   // MemPalace: 记忆宫殿 + 日记 + 知识图谱
   { id: 'palace_builtin', name: 'palace', description: '记忆宫殿：分层记忆管理、语义搜索、Agent 日记、时序知识图谱' },
+  // Browser Control: Playwright 浏览器自动化
+  { id: 'browser_builtin', name: 'browser', description: '浏览器控制：导航、截图、点击、输入、页面快照、标签页管理、PDF 导出' },
 ]
 
 /**
