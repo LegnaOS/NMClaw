@@ -5,6 +5,30 @@
  */
 import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { chromium } from 'playwright-core'
+import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+
+// ─── Chrome 路径查找 ───
+
+function findChromePath(): string {
+  const candidates = [
+    // Playwright cache 中的 Chrome for Testing
+    join(homedir(), 'Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
+    // 系统 Chrome
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    // Chromium
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    // Linux 常见路径
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  throw new Error('Chrome/Chromium not found. Run: npx playwright install chromium')
+}
 
 // ─── Session 管理 ───
 
@@ -28,7 +52,17 @@ function resetTimer(): void {
 async function ensureSession(): Promise<BrowserSession> {
   if (session) { resetTimer(); return session }
 
-  const browser = await chromium.launch({ headless: true })
+  // 优先用 channel: 'chrome' 启动完整 Chrome（不依赖 headless shell）
+  const browser = await chromium.launch({
+    channel: 'chrome',
+    headless: true,
+  }).catch(() =>
+    // 回退：直接指定已安装的 Chrome for Testing 路径
+    chromium.launch({
+      executablePath: findChromePath(),
+      headless: true,
+    })
+  )
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
