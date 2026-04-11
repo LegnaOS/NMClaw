@@ -567,8 +567,9 @@ export default function Channels() {
               {channels.map((ch: any) => {
                 const agent = agents.find((a: any) => a.id === ch.agentId)
                 const feishuCfg = ch.config || {}
-                const isWs = feishuCfg.mode === 'websocket'
+                const isLongConn = feishuCfg.mode === 'websocket' || ['wecom', 'telegram', 'discord', 'slack', 'dingtalk'].includes(ch.type)
                 const wsStatus = statuses[ch.id]
+                const isConnected = wsStatus === 'running' || wsStatus === 'connected'
                 return (
                   <tr key={ch.id} className="border-b border-[#334155]/50 hover:bg-[#334155]/30">
                     <td className="p-3">
@@ -584,18 +585,18 @@ export default function Channels() {
                       </span>
                     </td>
                     <td className="p-3 text-xs text-[#94a3b8]">
-                      {isWs ? 'WebSocket' : feishuCfg.mode === 'webhook' ? 'Webhook' : '-'}
+                      {isLongConn ? 'WebSocket' : feishuCfg.mode === 'webhook' ? 'Webhook' : '-'}
                     </td>
                     <td className="p-3">
-                      {isWs && (
+                      {isLongConn && (
                         <span className="flex items-center gap-1.5 text-xs">
-                          <span className={`w-2 h-2 rounded-full ${wsStatus === 'running' ? 'bg-[#22c55e]' : 'bg-[#64748b]'}`} />
-                          <span className={wsStatus === 'running' ? 'text-[#22c55e]' : 'text-[#64748b]'}>
-                            {wsStatus === 'running' ? '已连接' : '未连接'}
+                          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[#22c55e]' : 'bg-[#64748b]'}`} />
+                          <span className={isConnected ? 'text-[#22c55e]' : 'text-[#64748b]'}>
+                            {isConnected ? '已连接' : '未连接'}
                           </span>
                         </span>
                       )}
-                      {!isWs && <span className="text-xs text-[#64748b]">-</span>}
+                      {!isLongConn && <span className="text-xs text-[#64748b]">-</span>}
                     </td>
                     <td className="p-3 text-xs">
                       {feishuCfg.groupPolicy === 'allowlist' ? (
@@ -608,10 +609,10 @@ export default function Channels() {
                     </td>
                     <td className="p-3 text-xs">{agent?.name || ch.agentId}</td>
                     <td className="p-3 text-right space-x-2">
-                      {isWs && wsStatus !== 'running' && ch.enabled && (
+                      {isLongConn && !isConnected && ch.enabled && (
                         <button onClick={() => handleStart(ch.id)} className="text-xs text-[#22c55e] hover:text-[#4ade80]">启动</button>
                       )}
-                      {isWs && wsStatus === 'running' && (
+                      {isLongConn && isConnected && (
                         <button onClick={() => handleStop(ch.id)} className="text-xs text-[#f59e0b] hover:text-[#fbbf24]">停止</button>
                       )}
                       {feishuCfg.mode === 'webhook' && (
