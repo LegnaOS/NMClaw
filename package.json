@@ -1,6 +1,6 @@
 {
   "name": "nmclaw",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Agent orchestration platform — Genesis Agent as kernel, not God Agent",
   "type": "module",
   "bin": {
@@ -31,14 +31,20 @@
     "@inquirer/prompts": "^8.3.2",
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "@mozilla/readability": "^0.6.0",
+    "@slack/bolt": "^4.7.0",
+    "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.8.0",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
+    "discord.js": "^14.26.2",
+    "grammy": "^1.42.0",
     "hono": "^4.12.8",
     "linkedom": "^0.18.12",
     "nanoid": "^5.1.7",
     "openai": "^6.32.0",
-    "ora": "^9.3.0"
+    "ora": "^9.3.0",
+    "playwright-core": "^1.59.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

@@ -24,6 +24,7 @@ const DECISION_MARKERS = [
   /\b(instead of|rather than|over|versus)\b/i,
   /\b(decision|choice|approach)\b/i,
   /决定|选择|采用|方案|权衡|取舍/,
+  /最终用了|改成|换成|不用.*了|选了|定了|采取|方案是|决定用/,
 ]
 
 const PREFERENCE_MARKERS = [
@@ -34,6 +35,7 @@ const PREFERENCE_MARKERS = [
   /\bmy (rule|preference|style|convention) is\b/i,
   /\bwe (always|never)\b/i,
   /偏好|习惯|规则|风格|约定|总是|从不|必须/,
+  /喜欢用|不喜欢|一般都|每次都|习惯性|倾向于|推荐用|避免用|尽量用|尽量不/,
 ]
 
 const MILESTONE_MARKERS = [
@@ -44,6 +46,7 @@ const MILESTONE_MARKERS = [
   /\b(built|created|implemented|shipped|launched|deployed)\b/i,
   /\b(discovered|realized|found (out|that)|turns out)\b/i,
   /成功|突破|搞定|解决了|终于|第一次|里程碑|上线|发布/,
+  /搞定了|跑通了|通过了|上线了|完工|收工|大功告成|终于好了|搞出来了|做完了/,
 ]
 
 const PROBLEM_MARKERS = [
@@ -53,6 +56,7 @@ const PROBLEM_MARKERS = [
   /\b(root cause|workaround|hack|hotfix)\b/i,
   /\b(debug|traceback|stack ?trace|exception)\b/i,
   /报错|崩溃|失败|卡住|问题|故障|异常|排查|修复/,
+  /踩坑|坑了|出问题|不好使|挂了|炸了|跪了|翻车|回滚|搞不定|弄不好/,
 ]
 
 const EMOTIONAL_MARKERS = [
@@ -62,6 +66,7 @@ const EMOTIONAL_MARKERS = [
   /\b(grateful|thankful|sorry|regret)\b/i,
   /\b(amazing|terrible|wonderful|awful|beautiful)\b/i,
   /开心|难过|生气|兴奋|害怕|骄傲|感谢|遗憾|焦虑|感动/,
+  /烦死了|太棒了|无语|崩溃|郁闷|舒服|爽|难受|心累|开心死了|受不了|绝了/,
 ]
 
 const ALL_MARKERS: Record<MemoryType, RegExp[]> = {

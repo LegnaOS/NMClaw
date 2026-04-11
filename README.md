@@ -79,6 +79,20 @@ NMClaw 是一个多 Agent 编排平台。Genesis Agent 作为内核调度器 —
 
 ### Changelog
 
+#### v2.2.0 — 多渠道接入 + 记忆系统修复（参考 [OpenClaw](https://github.com/openclaw/openclaw)）
+
+- **渠道抽象层** — 统一 ChannelAdapter 接口 + IncomingMessage 标准化消息格式 + 对话历史缓存 + processIncomingMessage 统一入口
+- **Telegram 适配器** — grammy Long Polling，私聊+群聊（@bot），Markdown 回复，智能分片（换行/空格优先断开），"思考中"提示
+- **Discord 适配器** — discord.js WebSocket Gateway，DM+服务器频道（@bot），2000 字符分片，线程回复
+- **Slack 适配器** — @slack/bolt Socket Mode（无需公网 URL），DM+频道（@bot），线程回复，4000 字符分片
+- **企业微信适配器** — WebSocket 长连接（BotId 模式，无需公网 URL），Markdown 卡片回复
+- **钉钉适配器** — Stream 模式长连接（无需公网 URL），自动重连，sessionWebhook 回复
+- **微信公众号适配器** — 被动回复 + 客服消息异步回复（突破 5 秒限制），XML 解析/签名验证
+- **中文分词器重写** — 正向最大匹配替代 naive bigram，内置 ~500 高频词词典（技术/日常/情感），中英文混合分词
+- **实体提取增强** — 中文人名识别（80+ 常见姓氏）、引号/书名号内容提取、中英混合术语（Docker部署/Redis缓存）
+- **记忆分类中文标记扩充** — 5 类各增加 10+ 中文关键词（踩坑/搞定了/喜欢用/太棒了 等）
+- **情感词汇扩充** — 从 14 个扩充到 50+ 个中文情感信号词（烦/无语/崩溃/牛/佩服/纠结/释然 等）
+
 #### v2.1.0 — 记忆宫殿（融合 [MemPalace](https://github.com/milla-jovovich/mempalace)）
 
 - **4 层记忆栈** — L0 身份（~100 tokens）→ L1 核心故事（~800）→ L2 按需加载（工具触发）→ L3 深度语义搜索。唤醒成本 ~600-900 tokens，95%+ 上下文留给任务。drawers 为空时无缝回退原始记忆

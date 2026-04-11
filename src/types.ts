@@ -237,7 +237,7 @@ export type PermissionAction =
 
 // --- Channel (IM Bot Integration) ---
 
-export type ChannelType = 'feishu' | 'wecom' | 'dingtalk'
+export type ChannelType = 'feishu' | 'wecom' | 'dingtalk' | 'slack' | 'discord' | 'telegram' | 'wechat'
 
 export interface ChannelConfig {
   id: string
@@ -245,7 +245,7 @@ export interface ChannelConfig {
   type: ChannelType
   enabled: boolean
   agentId: string          // which agent handles messages from this channel
-  config: FeishuChannelConfig | Record<string, unknown>
+  config: FeishuChannelConfig | Record<string, any>
   createdAt: number
 }
 

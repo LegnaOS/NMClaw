@@ -33,6 +33,15 @@ const EMOTION_SIGNALS: Record<string, string> = {
   喜欢: 'love', 讨厌: 'rage', 害怕: 'fear', 骄傲: 'pride',
   感谢: 'grat', 好奇: 'curious', 累: 'exhaust', 开心: 'joy',
   难过: 'sad', 生气: 'rage',
+  烦: 'frust', 无语: 'frust', 崩溃: 'exhaust', 郁闷: 'sad',
+  舒服: 'satis', 爽: 'joy', 难受: 'sad', 心累: 'exhaust',
+  牛: 'excite', 厉害: 'excite', 佩服: 'pride', 温暖: 'warmth',
+  失望: 'sad', 绝望: 'fear', 紧张: 'anx', 激动: 'excite',
+  期待: 'curious', 满意: 'satis', 不满: 'rage', 委屈: 'sad',
+  尴尬: 'confuse', 后悔: 'doubt', 庆幸: 'relief', 释然: 'relief',
+  恐惧: 'fear', 愤怒: 'rage', 嫉妒: 'rage', 羡慕: 'curious',
+  同情: 'tender', 怀念: 'love', 思念: 'love', 孤独: 'sad',
+  幸福: 'joy', 甜蜜: 'love', 痛苦: 'sad', 纠结: 'doubt', 犹豫: 'doubt',
 }
 
 const AMBIGUOUS_NAMES = new Set([
@@ -98,6 +107,54 @@ function extractEntities(text: string): AAAKResult['entities'] {
     else if (name.includes(' ')) type = 'concept'
     seen.set(name, { name, type })
   }
+
+  // ── Chinese entity detection ──
+
+  // 1. Chinese person names: surname + 1-2 chars
+  const CN_SURNAMES = new Set([
+    '张','王','李','赵','刘','陈','杨','黄','周','吴','徐','孙','马','朱','胡',
+    '郭','林','何','高','罗','郑','梁','谢','宋','唐','韩','曹','许','邓','冯',
+    '萧','程','蔡','彭','潘','袁','于','董','余','苏','叶','吕','魏','蒋','田',
+    '杜','丁','沈','姜','范','江','傅','钟','卢','汪','戴','崔','任','陆','廖',
+    '姚','方','金','邱','夏','谭','石','贺','龙','段','雷','侯','白','邹','孟',
+    '熊','秦','邵','赖','史','龚','贾','万','顾','武','康','严','尹','薛','闫',
+    '乔',
+  ])
+  const cnNameRe = /(?:^|[\s，。！？、；：""''（）\n])([一-\u9fff]{2,3})/g
+  let cnM: RegExpExecArray | null
+  while ((cnM = cnNameRe.exec(text))) {
+    const w = cnM[1]
+    if (w.length < 2 || w.length > 3) continue
+    if (!CN_SURNAMES.has(w[0])) continue
+    if (seen.has(w)) continue
+    seen.set(w, { name: w, type: 'person' })
+  }
+
+  // 2. Quoted content: Chinese quotes
+  const quotePatterns: { re: RegExp; type: AAAKResult['entities'][0]['type'] }[] = [
+    { re: /\u300a([^\u300b]+)\u300b/g, type: 'project' },   // 《xxx》
+    { re: /\u201c([^\u201d]+)\u201d/g, type: 'concept' },   // "xxx"
+    { re: /\u300c([^\u300d]+)\u300d/g, type: 'concept' },   // 「xxx」
+    { re: /\u300e([^\u300f]+)\u300f/g, type: 'concept' },   // 『xxx』
+  ]
+  for (const { re, type } of quotePatterns) {
+    let qm: RegExpExecArray | null
+    while ((qm = re.exec(text))) {
+      const inner = qm[1].trim()
+      if (inner.length < 1 || inner.length > 50 || seen.has(inner)) continue
+      seen.set(inner, { name: inner, type })
+    }
+  }
+
+  // 3. Code identifiers mixed with Chinese: e.g. Docker部署, Redis缓存
+  const mixedRe = /\b([A-Za-z][A-Za-z0-9]*)([\u4e00-\u9fff]{1,4})/g
+  let mixM: RegExpExecArray | null
+  while ((mixM = mixedRe.exec(text))) {
+    const full = mixM[1] + mixM[2]
+    if (seen.has(full)) continue
+    seen.set(full, { name: full, type: 'tool' })
+  }
+
   return [...seen.values()]
 }
 

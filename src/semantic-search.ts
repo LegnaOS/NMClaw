@@ -1,9 +1,10 @@
 /**
  * M6: Semantic Search — TF-IDF + Cosine Similarity
- * 零外部依赖，用 SQLite drawers 表做语义搜索
+ * 用正向最大匹配中文分词替代 naive bigram
  */
 import { getAllDrawerContents, getDrawerCount } from './memory.js'
 import { searchMemory } from './memory.js'
+import { tokenizeMixed } from './chinese-tokenizer.js'
 
 export interface SearchHit {
   drawerId: string
@@ -14,17 +15,10 @@ export interface SearchHit {
   memoryType?: string
 }
 
-// ─── 中文 bigram 分词 + 英文空格分词 ───
+// ─── 分词（使用正向最大匹配） ───
 
 function tokenize(text: string): string[] {
-  const tokens: string[] = []
-  const lower = text.toLowerCase()
-  // 英文词
-  for (const m of lower.matchAll(/[a-z][a-z0-9_]{1,}/g)) tokens.push(m[0])
-  // 中文 bigram
-  const cjk = lower.replace(/[^\u4e00-\u9fff]/g, '')
-  for (let i = 0; i < cjk.length - 1; i++) tokens.push(cjk.slice(i, i + 2))
-  return tokens
+  return tokenizeMixed(text)
 }
 
 // ─── TF-IDF ───
