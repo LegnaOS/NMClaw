@@ -2,7 +2,7 @@
  * Document Parser — 文档解析内置 MCP
  * 支持 PDF / Excel(.xlsx/.xls) / Word(.docx) / PowerPoint(.pptx) / RTF
  */
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, basename } from 'node:path'
 
@@ -202,7 +202,213 @@ async function parseRtf(buffer: Buffer): Promise<ParseResult> {
   }
 }
 
-// ─── 统一解析入口 ───
+// ─── Excel 编辑 ───
+
+async function editXlsx(filePath: string, edits: XlsxEdit[]): Promise<string> {
+  const XLSX = await import('xlsx')
+  const buffer = await readFile(filePath)
+  const wb = XLSX.read(buffer, { type: 'buffer' })
+
+  let changeCount = 0
+  for (const edit of edits) {
+    const sheetName = edit.sheet || wb.SheetNames[0]
+    let ws = wb.Sheets[sheetName]
+
+    // 新建工作表
+    if (!ws && edit.action === 'add_sheet') {
+      ws = XLSX.utils.aoa_to_sheet([[]])
+      XLSX.utils.book_append_sheet(wb, ws, sheetName)
+      changeCount++
+      continue
+    }
+    if (!ws) throw new Error(`工作表 "${sheetName}" 不存在`)
+
+    if (edit.action === 'set_cell') {
+      // 设置单元格值: { action: 'set_cell', cell: 'A1', value: 'hello' }
+      if (!edit.cell || edit.value === undefined) throw new Error('set_cell 需要 cell 和 value')
+      ws[edit.cell] = { t: typeof edit.value === 'number' ? 'n' : 's', v: edit.value }
+      changeCount++
+    } else if (edit.action === 'set_row') {
+      // 设置整行: { action: 'set_row', row: 2, values: ['a', 'b', 'c'] }
+      if (!edit.row || !edit.values) throw new Error('set_row 需要 row 和 values')
+      for (let c = 0; c < edit.values.length; c++) {
+        const cell = XLSX.utils.encode_cell({ r: edit.row - 1, c })
+        const v = edit.values[c]
+        ws[cell] = { t: typeof v === 'number' ? 'n' : 's', v }
+      }
+      // 更新范围
+      const range = XLSX.utils.decode_range(ws['!ref'] || 'A1')
+      range.e.r = Math.max(range.e.r, edit.row - 1)
+      range.e.c = Math.max(range.e.c, edit.values.length - 1)
+      ws['!ref'] = XLSX.utils.encode_range(range)
+      changeCount++
+    } else if (edit.action === 'append_rows') {
+      // 追加行: { action: 'append_rows', rows: [['a','b'],['c','d']] }
+      if (!edit.rows) throw new Error('append_rows 需要 rows')
+      XLSX.utils.sheet_add_aoa(ws, edit.rows, { origin: -1 })
+      changeCount += edit.rows.length
+    } else if (edit.action === 'delete_row') {
+      // 删除行（通过重建工作表）
+      if (!edit.row) throw new Error('delete_row 需要 row')
+      const data: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1 })
+      data.splice(edit.row - 1, 1)
+      const newWs = XLSX.utils.aoa_to_sheet(data)
+      wb.Sheets[sheetName] = newWs
+      changeCount++
+    } else if (edit.action === 'rename_sheet') {
+      // 重命名工作表
+      if (!edit.newName) throw new Error('rename_sheet 需要 newName')
+      const idx = wb.SheetNames.indexOf(sheetName)
+      if (idx >= 0) wb.SheetNames[idx] = edit.newName
+      wb.Sheets[edit.newName] = ws
+      delete wb.Sheets[sheetName]
+      changeCount++
+    } else if (edit.action === 'delete_sheet') {
+      const idx = wb.SheetNames.indexOf(sheetName)
+      if (idx >= 0) {
+        wb.SheetNames.splice(idx, 1)
+        delete wb.Sheets[sheetName]
+        changeCount++
+      }
+    } else if (edit.action === 'add_sheet') {
+      // 已在上面处理
+    } else {
+      throw new Error(`未知 Excel 编辑操作: ${edit.action}`)
+    }
+  }
+
+  const outBuf = XLSX.write(wb, { type: 'buffer', bookType: filePath.endsWith('.xls') ? 'xls' : 'xlsx' })
+  await writeFile(filePath, outBuf)
+  return `Excel 已保存: ${changeCount} 处修改 → ${basename(filePath)}`
+}
+
+interface XlsxEdit {
+  action: 'set_cell' | 'set_row' | 'append_rows' | 'delete_row' | 'rename_sheet' | 'delete_sheet' | 'add_sheet'
+  sheet?: string
+  cell?: string
+  value?: unknown
+  row?: number
+  values?: unknown[]
+  rows?: unknown[][]
+  newName?: string
+}
+
+// ─── Word 编辑（文本替换 + 追加段落） ───
+
+async function editDocx(filePath: string, edits: DocxEdit[]): Promise<string> {
+  const JSZip = (await import('jszip')).default
+  const buffer = await readFile(filePath)
+  const zip = await JSZip.loadAsync(buffer)
+
+  const docXml = await zip.files['word/document.xml']?.async('text')
+  if (!docXml) throw new Error('无效的 .docx 文件')
+
+  let xml = docXml
+  let changeCount = 0
+
+  for (const edit of edits) {
+    if (edit.action === 'replace') {
+      // 文本替换: { action: 'replace', find: '旧文本', replace: '新文本' }
+      if (!edit.find) throw new Error('replace 需要 find')
+      // Word XML 中文本可能被拆分到多个 <w:t> 节点，先尝试直接替换
+      const before = xml
+      xml = xml.split(edit.find).join(edit.replace || '')
+      if (xml !== before) changeCount++
+    } else if (edit.action === 'append') {
+      // 追加段落: { action: 'append', text: '新段落内容' }
+      if (!edit.text) throw new Error('append 需要 text')
+      const newParagraph = `<w:p><w:r><w:t>${escapeXml(edit.text)}</w:t></w:r></w:p>`
+      // 在 </w:body> 前插入
+      xml = xml.replace('</w:body>', `${newParagraph}</w:body>`)
+      changeCount++
+    } else {
+      throw new Error(`未知 Word 编辑操作: ${edit.action}`)
+    }
+  }
+
+  zip.file('word/document.xml', xml)
+  const outBuf = await zip.generateAsync({ type: 'nodebuffer' })
+  await writeFile(filePath, outBuf)
+  return `Word 已保存: ${changeCount} 处修改 → ${basename(filePath)}`
+}
+
+interface DocxEdit {
+  action: 'replace' | 'append'
+  find?: string
+  replace?: string
+  text?: string
+}
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+// ─── PPT 文字替换 ───
+
+async function editPptx(filePath: string, edits: PptxEdit[]): Promise<string> {
+  const JSZip = (await import('jszip')).default
+  const buffer = await readFile(filePath)
+  const zip = await JSZip.loadAsync(buffer)
+
+  let changeCount = 0
+
+  for (const edit of edits) {
+    if (edit.action === 'replace') {
+      if (!edit.find) throw new Error('replace 需要 find')
+      // 在指定幻灯片或所有幻灯片中替换
+      const slideFiles = Object.keys(zip.files)
+        .filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f))
+
+      const targets = edit.slide
+        ? slideFiles.filter(f => f === `ppt/slides/slide${edit.slide}.xml`)
+        : slideFiles
+
+      for (const f of targets) {
+        let xml = await zip.files[f].async('text')
+        const before = xml
+        xml = xml.split(edit.find).join(edit.replace || '')
+        if (xml !== before) {
+          zip.file(f, xml)
+          changeCount++
+        }
+      }
+    } else {
+      throw new Error(`未知 PPT 编辑操作: ${edit.action}`)
+    }
+  }
+
+  const outBuf = await zip.generateAsync({ type: 'nodebuffer' })
+  await writeFile(filePath, outBuf)
+  return `PowerPoint 已保存: ${changeCount} 处修改 → ${basename(filePath)}`
+}
+
+interface PptxEdit {
+  action: 'replace'
+  find?: string
+  replace?: string
+  slide?: number  // 指定幻灯片编号，不填则全部
+}
+
+// ─── 统一编辑入口 ───
+
+async function editDocument(filePath: string, edits: unknown[]): Promise<string> {
+  if (!existsSync(filePath)) throw new Error(`文件不存在: ${filePath}`)
+  const ext = extname(filePath).toLowerCase()
+
+  if (ext === '.xlsx' || ext === '.xls') {
+    return editXlsx(filePath, edits as XlsxEdit[])
+  }
+  if (ext === '.docx') {
+    return editDocx(filePath, edits as DocxEdit[])
+  }
+  if (ext === '.pptx') {
+    return editPptx(filePath, edits as PptxEdit[])
+  }
+  if (ext === '.pdf') {
+    throw new Error('PDF 是打印格式，不支持原地编辑。可以用 parse_document 读取内容后生成新文件。')
+  }
+  throw new Error(`不支持编辑 ${ext} 格式。可编辑格式: .xlsx, .xls, .docx, .pptx`)
+}
 
 async function parseDocument(filePath: string, opts?: { pages?: string; sheets?: string[] }): Promise<ParseResult> {
   if (!existsSync(filePath)) throw new Error(`文件不存在: ${filePath}`)
@@ -324,6 +530,44 @@ export function getDocumentToolDefs() {
       concurrencySafe: true,
       readOnly: true,
     },
+    {
+      name: 'edit_document',
+      description: '编辑文档文件，保留原始格式。支持 Excel(.xlsx/.xls) 完整编辑、Word(.docx) 文本替换/追加、PowerPoint(.pptx) 文字替换。PDF 不支持编辑。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件路径' },
+          edits: {
+            type: 'array',
+            description: '编辑操作列表',
+            items: {
+              type: 'object',
+              properties: {
+                action: {
+                  type: 'string',
+                  description: 'Excel: set_cell/set_row/append_rows/delete_row/rename_sheet/delete_sheet/add_sheet。Word: replace/append。PPT: replace',
+                },
+                sheet: { type: 'string', description: 'Excel: 工作表名（默认第一个）' },
+                cell: { type: 'string', description: 'Excel set_cell: 单元格地址如 "A1"' },
+                value: { description: 'Excel set_cell: 单元格值' },
+                row: { type: 'number', description: 'Excel set_row/delete_row: 行号（从1开始）' },
+                values: { type: 'array', description: 'Excel set_row: 整行值数组' },
+                rows: { type: 'array', description: 'Excel append_rows: 二维数组' },
+                newName: { type: 'string', description: 'Excel rename_sheet: 新名称' },
+                find: { type: 'string', description: 'Word/PPT replace: 要查找的文本' },
+                replace: { type: 'string', description: 'Word/PPT replace: 替换为的文本' },
+                text: { type: 'string', description: 'Word append: 追加的段落文本' },
+                slide: { type: 'number', description: 'PPT replace: 指定幻灯片编号（不填则全部）' },
+              },
+              required: ['action'],
+            },
+          },
+        },
+        required: ['path', 'edits'],
+      },
+      concurrencySafe: false,
+      readOnly: false,
+    },
   ]
 }
 
@@ -350,6 +594,10 @@ export async function handleDocumentTool(name: string, input: Record<string, unk
     if (name === 'document_info') {
       const info = await getDocumentInfo(input.path as string)
       return { content: JSON.stringify(info, null, 2) }
+    }
+    if (name === 'edit_document') {
+      const msg = await editDocument(input.path as string, input.edits as unknown[])
+      return { content: msg }
     }
     return { content: `未知工具: ${name}`, isError: true }
   } catch (e) {
