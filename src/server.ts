@@ -64,15 +64,15 @@ startHeartbeatLoop()
 
 // Start all channel monitors (feishu + telegram + discord + slack + wecom + dingtalk + wechat)
 startAllFeishuMonitors()
-// 动态加载非飞书渠道适配器
-import('./channels/telegram.js').catch(() => {})
-import('./channels/discord.js').catch(() => {})
-import('./channels/slack.js').catch(() => {})
-import('./channels/wecom.js').catch(() => {})
-import('./channels/dingtalk.js').catch(() => {})
-import('./channels/wechat.js').catch(() => {})
-// 启动所有非飞书渠道
-startAllChannels()
+// 动态加载非飞书渠道适配器，等全部加载完再启动
+Promise.all([
+  import('./channels/telegram.js').catch(() => {}),
+  import('./channels/discord.js').catch(() => {}),
+  import('./channels/slack.js').catch(() => {}),
+  import('./channels/wecom.js').catch(() => {}),
+  import('./channels/dingtalk.js').catch(() => {}),
+  import('./channels/wechat.js').catch(() => {}),
+]).then(() => startAllChannels())
 
 const app = new Hono()
 
