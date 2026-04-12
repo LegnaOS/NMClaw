@@ -236,7 +236,7 @@ export interface ChannelMessage {
 const channelMessageLog: ChannelMessage[] = []
 const MAX_CHANNEL_MESSAGES = 500
 
-function recordChannelMessage(msg: Omit<ChannelMessage, 'id'>): void {
+export function recordChannelMessage(msg: Omit<ChannelMessage, 'id'>): void {
   channelMessageLog.push({ ...msg, id: `cm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}` })
   if (channelMessageLog.length > MAX_CHANNEL_MESSAGES) {
     channelMessageLog.splice(0, channelMessageLog.length - MAX_CHANNEL_MESSAGES)

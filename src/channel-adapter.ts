@@ -4,6 +4,7 @@
  */
 import { streamTask } from './executor.js'
 import { loadStore } from './store.js'
+import { recordChannelMessage } from './channels/feishu.js'
 import type { ChannelConfig, ChatMessage } from './types.js'
 
 // ─── 标准化消息格式 ───
@@ -119,6 +120,31 @@ export async function processIncomingMessage(
   const trimmed = fullResponse.trim()
   if (trimmed) {
     pushHistory(msg.channelId, msg.userId, msg.content, trimmed)
+  }
+
+  // 记录到渠道消息日志（前端会话列表可见）
+  const convId = `${msg.channelId}:${msg.userId}`
+  recordChannelMessage({
+    conversationId: convId,
+    channelId: msg.channelId,
+    channelName: channel.name,
+    channelType: channel.type,
+    senderId: msg.userId,
+    role: 'user',
+    content: msg.content,
+    timestamp: msg.timestamp || Date.now(),
+  })
+  if (trimmed) {
+    recordChannelMessage({
+      conversationId: convId,
+      channelId: msg.channelId,
+      channelName: channel.name,
+      channelType: channel.type,
+      senderId: 'assistant',
+      role: 'assistant',
+      content: trimmed,
+      timestamp: Date.now(),
+    })
   }
 
   return trimmed
