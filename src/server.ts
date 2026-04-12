@@ -375,6 +375,39 @@ app.post('/api/tasks', async (c) => {
 })
 
 // ═══════════════════════════════════
+//  File Upload (for chat attachments)
+// ═══════════════════════════════════
+app.post('/api/upload', async (c) => {
+  const body = await c.req.parseBody()
+  const file = body['file']
+  if (!file || typeof file === 'string') return c.json({ error: 'file required' }, 400)
+
+  const { mkdirSync, existsSync } = await import('node:fs')
+  const { writeFile: fsWrite } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { nanoid } = await import('nanoid')
+
+  const uploadDir = join(process.cwd(), 'data', 'uploads')
+  if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true })
+
+  // 保留原始文件名，加随机前缀防冲突
+  const originalName = file.name || 'file'
+  const safeName = `${nanoid(8)}_${originalName.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fff]/g, '_')}`
+  const filePath = join(uploadDir, safeName)
+
+  const buffer = Buffer.from(await file.arrayBuffer())
+  await fsWrite(filePath, buffer)
+
+  return c.json({
+    path: filePath,
+    name: originalName,
+    size: buffer.byteLength,
+    sizeHuman: buffer.byteLength < 1024 * 1024
+      ? `${(buffer.byteLength / 1024).toFixed(1)} KB`
+      : `${(buffer.byteLength / (1024 * 1024)).toFixed(1)} MB`,
+  })
+})
+
 //  Chat (SSE streaming)
 // ═══════════════════════════════════
 app.post('/api/chat', async (c) => {

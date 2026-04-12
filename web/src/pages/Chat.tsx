@@ -297,10 +297,13 @@ export default function Chat() {
   const [streaming, setStreaming] = useState(false)
   const [editingIdx, setEditingIdx] = useState<number | null>(null)
   const [editText, setEditText] = useState('')
+  const [pendingFiles, setPendingFiles] = useState<{ name: string; path: string; sizeHuman: string }[]>([])
+  const [uploading, setUploading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -416,8 +419,18 @@ export default function Chat() {
   const send = async () => {
     if (!isWeb) return // channel conversations are read-only in web UI
     const text = input.trim()
-    if (!text || streaming) return
-    const userMsg: Message = { role: 'user', content: text, timestamp: Date.now() }
+    if (!text && !pendingFiles.length) return
+    if (streaming) return
+
+    // 构建消息内容：文本 + 文件引用
+    let content = text
+    if (pendingFiles.length) {
+      const fileParts = pendingFiles.map(f => `[文件: ${f.name} (${f.sizeHuman}) → ${f.path}]`).join('\n')
+      content = content ? `${content}\n\n${fileParts}` : fileParts
+      setPendingFiles([])
+    }
+
+    const userMsg: Message = { role: 'user', content, timestamp: Date.now() }
     const history = [...webMessages, userMsg]
     setWebMessages(history)
     setInput('')
@@ -444,6 +457,32 @@ export default function Chat() {
   }
 
   const cancelEdit = () => { setEditingIdx(null); setEditText('') }
+
+  const handleFileUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploading(true)
+    try {
+      for (const file of Array.from(files)) {
+        const form = new FormData()
+        form.append('file', file)
+        const res = await fetch('/api/upload', { method: 'POST', body: form })
+        if (!res.ok) throw new Error(await res.text())
+        const data = await res.json()
+        setPendingFiles(prev => [...prev, { name: data.name, path: data.path, sizeHuman: data.sizeHuman }])
+      }
+    } catch (e) {
+      alert(`上传失败: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    handleFileUpload(e.dataTransfer.files)
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
@@ -579,18 +618,45 @@ export default function Chat() {
         </div>
 
         {/* Input */}
-        <div className="shrink-0 px-6 py-3 border-t border-[#334155] bg-[#1e293b]">
+        <div className="shrink-0 px-6 py-3 border-t border-[#334155] bg-[#1e293b]"
+          onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+          onDrop={handleDrop}>
           {isWeb ? (
-            <div className="flex gap-2 items-end">
-              <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown} placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
-                disabled={streaming} rows={1}
-                className="flex-1 bg-[#0f172a] border border-[#475569] rounded-lg px-4 py-2.5 text-sm focus:border-[#3b82f6] outline-none resize-none disabled:opacity-40 max-h-32"
-                style={{ minHeight: '42px' }} />
-              <button onClick={streaming ? stopStreaming : send} disabled={!streaming && !input.trim()}
-                className={`px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0 ${streaming ? 'bg-red-500 hover:bg-red-600' : 'bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40'}`}>
-                {streaming ? '停止' : '发送'}
-              </button>
+            <div className="space-y-2">
+              {/* 已上传文件预览 */}
+              {pendingFiles.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pendingFiles.map((f, i) => (
+                    <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-[#334155] rounded-md text-xs">
+                      <span className="text-[#94a3b8]">📎</span>
+                      <span className="text-[#e2e8f0] max-w-[200px] truncate">{f.name}</span>
+                      <span className="text-[#64748b]">({f.sizeHuman})</span>
+                      <button onClick={() => setPendingFiles(prev => prev.filter((_, j) => j !== i))}
+                        className="text-[#64748b] hover:text-red-400 ml-0.5">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 items-end">
+                {/* 文件上传按钮 */}
+                <input ref={fileInputRef} type="file" multiple className="hidden"
+                  accept=".pdf,.xlsx,.xls,.docx,.pptx,.rtf,.csv,.json,.xml,.yaml,.yml,.txt,.md,.html,.htm,.jpg,.jpeg,.png,.gif,.webp,.svg,.zip,.tar,.gz"
+                  onChange={(e) => handleFileUpload(e.target.files)} />
+                <button onClick={() => fileInputRef.current?.click()} disabled={uploading || streaming}
+                  title="上传文件 (支持拖拽)"
+                  className="px-2.5 py-2.5 rounded-lg text-sm transition-colors shrink-0 bg-[#0f172a] border border-[#475569] hover:border-[#3b82f6] disabled:opacity-40">
+                  {uploading ? '⏳' : '📎'}
+                </button>
+                <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown} placeholder={pendingFiles.length ? '添加说明... (Enter 发送)' : '输入消息... (Enter 发送, Shift+Enter 换行)'}
+                  disabled={streaming} rows={1}
+                  className="flex-1 bg-[#0f172a] border border-[#475569] rounded-lg px-4 py-2.5 text-sm focus:border-[#3b82f6] outline-none resize-none disabled:opacity-40 max-h-32"
+                  style={{ minHeight: '42px' }} />
+                <button onClick={streaming ? stopStreaming : send} disabled={!streaming && !input.trim() && !pendingFiles.length}
+                  className={`px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0 ${streaming ? 'bg-red-500 hover:bg-red-600' : 'bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-40'}`}>
+                  {streaming ? '停止' : '发送'}
+                </button>
+              </div>
             </div>
           ) : (
             <div className="text-center text-xs text-[#475569] py-1">
