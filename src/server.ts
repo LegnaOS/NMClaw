@@ -3,6 +3,7 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { streamSSE } from 'hono/streaming'
+import { nanoid } from 'nanoid'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync } from 'node:fs'
@@ -385,7 +386,6 @@ app.post('/api/upload', async (c) => {
   const { mkdirSync, existsSync } = await import('node:fs')
   const { writeFile: fsWrite } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const { nanoid } = await import('nanoid')
 
   const uploadDir = join(process.cwd(), 'data', 'uploads')
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true })

@@ -3,6 +3,7 @@
  * Storage: ~/.nmclaw/memory/{agentId}.sqlite
  */
 import Database from 'better-sqlite3'
+import { nanoid } from 'nanoid'
 import { mkdirSync, existsSync, readdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { getStoreDir } from './store.js'
@@ -271,7 +272,6 @@ function ensureDrawers(db: Database.Database): void {
 }
 
 export function addDrawer(agentId: string, input: DrawerInput): string {
-  const { nanoid } = require('nanoid') as { nanoid: (size?: number) => string }
   const db = getDb(agentId)
   const id = nanoid(12)
   const now = Date.now()
