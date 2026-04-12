@@ -1577,6 +1577,12 @@ const BUILTIN_REGISTRY: Record<string, BuiltinMcp> = {
     tools: [], // 启动时加载
     call: builtinBrowser,
   },
+
+  // ═══ Document Parser ═══
+  document: {
+    tools: [], // 启动时加载
+    call: builtinDocument,
+  },
 }
 
 // 加载浏览器工具定义
@@ -1589,11 +1595,28 @@ async function ensureBrowserTools() {
 }
 ensureBrowserTools()
 
+// 加载文档解析工具定义
+let documentToolsLoaded = false
+async function ensureDocumentTools() {
+  if (documentToolsLoaded) return
+  const { getDocumentToolDefs } = await import('./document-parser.js')
+  BUILTIN_REGISTRY.document.tools = getDocumentToolDefs()
+  documentToolsLoaded = true
+}
+ensureDocumentTools()
+
 // ─── Browser handler ───
 
 async function builtinBrowser(name: string, input: Record<string, unknown>): Promise<ToolResult> {
   const { handleBrowserTool } = await import('./browser-control.js')
   return await handleBrowserTool(name, input)
+}
+
+// ─── Document handler ───
+
+async function builtinDocument(name: string, input: Record<string, unknown>): Promise<ToolResult> {
+  const { handleDocumentTool } = await import('./document-parser.js')
+  return await handleDocumentTool(name, input)
 }
 
 // ─── MemPalace handler ───

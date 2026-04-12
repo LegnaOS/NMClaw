@@ -237,6 +237,8 @@ const BUILTIN_MCP_REGISTRY: { id: string; name: string; description: string }[] 
   { id: 'palace_builtin', name: 'palace', description: '记忆宫殿：分层记忆管理、语义搜索、Agent 日记、时序知识图谱' },
   // Browser Control: Playwright 浏览器自动化
   { id: 'browser_builtin', name: 'browser', description: '浏览器控制：导航、截图、点击、输入、页面快照、标签页管理、PDF 导出' },
+  // Document Parser: 文档解析
+  { id: 'document_builtin', name: 'document', description: '文档解析：PDF/Excel/Word/PowerPoint/RTF 文件内容提取，Excel 输出 Markdown 表格' },
 ]
 
 /**
